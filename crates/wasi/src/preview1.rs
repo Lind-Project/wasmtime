@@ -1815,17 +1815,16 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         memory: &mut GuestMemory<'_>,
         call_number: u32,
         call_name : u64,
-        start_address: u64,
         arg1: u64,
         arg2: u64,
         arg3: u64,
         arg4: u64,
         arg5: u64,
-        arg6: u64) -> Result<types::Size, types::Error> {
+        arg6: u64) -> Result<(), types::Error> {
         // rustposix::lind_lindrustinit(0);
         // rustposix::lind_syscall_inner(call_number, call_name, start_address, arg1, arg2, arg3, arg4, arg5, arg6);
         // rustposix::lind_lindrustfinalize();
-        Ok(0)
+        Ok(())
     }
 
     /// Write to a file descriptor, without using and updating the file descriptor's offset.
