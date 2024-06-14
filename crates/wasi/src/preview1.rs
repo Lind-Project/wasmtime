@@ -1821,9 +1821,9 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         arg4: u64,
         arg5: u64,
         arg6: u64) -> Result<(), types::Error> {
-        // rustposix::lind_lindrustinit(0);
-        // rustposix::lind_syscall_inner(call_number, call_name, start_address, arg1, arg2, arg3, arg4, arg5, arg6);
-        // rustposix::lind_lindrustfinalize();
+        rustposix::lind_lindrustinit(0);
+        rustposix::lind_syscall_inner(call_number, call_name, memory.base() as u64, arg1, arg2, arg3, arg4, arg5, arg6);
+        rustposix::lind_lindrustfinalize();
         Ok(())
     }
 
