@@ -763,7 +763,7 @@ wiggle::from_witx!({
             fd_filestat_set_times, fd_read, fd_pread, fd_seek, fd_sync, fd_readdir, fd_write,
             fd_pwrite, poll_oneoff, path_create_directory, path_filestat_get,
             path_filestat_set_times, path_link, path_open, path_readlink, path_remove_directory,
-            path_rename, path_symlink, path_unlink_file
+            path_rename, path_symlink, path_unlink_file, lind_syscall
         }
     },
     errors: { errno => trappable Error },
@@ -782,7 +782,7 @@ pub(crate) mod sync {
                 fd_filestat_set_times, fd_read, fd_pread, fd_seek, fd_sync, fd_readdir, fd_write,
                 fd_pwrite, poll_oneoff, path_create_directory, path_filestat_get,
                 path_filestat_set_times, path_link, path_open, path_readlink, path_remove_directory,
-                path_rename, path_symlink, path_unlink_file
+                path_rename, path_symlink, path_unlink_file, lind_syscall
             }
         },
         errors: { errno => trappable Error },
@@ -1809,6 +1809,23 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
             }
             _ => Err(types::Errno::Badf.into()),
         }
+    }
+
+    async fn lind_syscall(&mut self,
+        memory: &mut GuestMemory<'_>,
+        call_number: u32,
+        call_name : u64,
+        start_address: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64) -> Result<types::Size, types::Error> {
+        // rustposix::lind_lindrustinit(0);
+        // rustposix::lind_syscall_inner(call_number, call_name, start_address, arg1, arg2, arg3, arg4, arg5, arg6);
+        // rustposix::lind_lindrustfinalize();
+        Ok(0)
     }
 
     /// Write to a file descriptor, without using and updating the file descriptor's offset.

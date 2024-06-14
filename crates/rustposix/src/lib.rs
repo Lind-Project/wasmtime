@@ -1,3 +1,4 @@
+extern crate libc;
 pub mod librustposix {
     use libc::{
         c_char, c_void, fd_set, itimerval, off_t, rlimit, sockaddr, socklen_t, ssize_t, statfs,

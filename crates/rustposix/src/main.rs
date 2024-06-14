@@ -1,3 +1,4 @@
+extern crate libc;
 use libc::{printf, STDOUT_FILENO};
 use rustposix::*;
 
