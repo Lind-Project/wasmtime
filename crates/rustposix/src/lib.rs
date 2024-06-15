@@ -183,7 +183,7 @@ pub mod librustposix {
             arg4: u64,
             arg5: u64,
             arg6: u64,
-        );
+        ) -> u32;
     }
 }
 
@@ -269,7 +269,7 @@ pub fn lind_syscall_inner(
     arg4: u64,
     arg5: u64,
     arg6: u64,
-) {
+) -> u32 {
     unsafe {
         lind_syscall_api(
             call_number,

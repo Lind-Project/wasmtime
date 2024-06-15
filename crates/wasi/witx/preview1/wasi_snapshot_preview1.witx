@@ -529,6 +529,6 @@
     (param $arg4 u64)
     (param $arg5 u64)
     (param $arg6 u64)
-    (result $error (expected (error $errno)))
+    (result $error (expected $size (error $errno)))
   )
 )

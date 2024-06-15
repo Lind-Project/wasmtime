@@ -1820,9 +1820,9 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         arg3: u64,
         arg4: u64,
         arg5: u64,
-        arg6: u64) -> Result<(), types::Error> {
-        rustposix::lind_syscall_inner(call_number, call_name, memory.base() as u64, arg1, arg2, arg3, arg4, arg5, arg6);
-        Ok(())
+        arg6: u64) -> Result<types::Size, types::Error> {
+        let res = rustposix::lind_syscall_inner(call_number, call_name, memory.base() as u64, arg1, arg2, arg3, arg4, arg5, arg6);
+        Ok(res)
     }
 
     /// Write to a file descriptor, without using and updating the file descriptor's offset.
