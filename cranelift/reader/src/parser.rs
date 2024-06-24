@@ -1347,14 +1347,20 @@ impl<'a> Parser<'a> {
         }
 
         // The calling convention is optional.
-        if let Some(Token::Identifier(text)) = self.token() {
-            match text.parse() {
+        match self.token() {
+            Some(Token::Identifier(text)) => match text.parse() {
                 Ok(cc) => {
                     self.consume();
                     sig.call_conv = cc;
                 }
                 _ => return err!(self.loc, "unknown calling convention: {}", text),
+            },
+
+            Some(Token::Cold) => {
+                self.consume();
+                sig.call_conv = CallConv::Cold;
             }
+            _ => {}
         }
 
         Ok(sig)
@@ -2487,11 +2493,7 @@ impl<'a> Parser<'a> {
                         self.match_uimm32("expected a u32 offset")?.into()
                     }
                     _ => {
-                        self.match_token(Token::Plus, "expected `+ <offset>`")
-                            .map_err(|e| {
-                                dbg!(self.lookahead);
-                                e
-                            })?;
+                        self.match_token(Token::Plus, "expected `+ <offset>`")?;
                         self.match_uimm32("expected a u32 offset")?.into()
                     }
                 };

@@ -69,8 +69,9 @@ pub(crate) fn build_artifacts<T: FinishedObject>(
     // about the wasm module. This is where the WebAssembly is parsed and
     // validated. Afterwards `types` will have all the type information for
     // this module.
-    let parser = wasmparser::Parser::new(0);
+    let mut parser = wasmparser::Parser::new(0);
     let mut validator = wasmparser::Validator::new_with_features(engine.config().features.clone());
+    parser.set_features(*validator.features());
     let mut types = ModuleTypesBuilder::new(&validator);
     let mut translation = ModuleEnvironment::new(tunables, &mut validator, &mut types)
         .translate(parser, wasm)
@@ -166,19 +167,7 @@ pub(crate) fn build_component_artifacts<T: FinishedObject>(
         module_translations,
         None, // TODO: Support dwarf packages for components.
     )?;
-    let (types, ty) = types.finish(
-        &compilation_artifacts.modules,
-        component
-            .component
-            .import_types
-            .iter()
-            .map(|(_, (name, ty))| (name.clone(), *ty)),
-        component
-            .component
-            .exports
-            .iter()
-            .map(|(name, ty)| (name.clone(), ty)),
-    );
+    let (types, ty) = types.finish(&component.component);
 
     let info = CompiledComponentInfo {
         component: component.component,

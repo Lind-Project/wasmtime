@@ -14,22 +14,22 @@ default-run = "wasmtime"
 rust-version.workspace = true
 
 [package.metadata.binstall]
-pkg-url = "{repo}/releases/download/v{version}/{name}-v{version}-{target-arch}-{target-family}{archive-suffix}"
-bin-dir = "{name}-{version}-{target-arch}-{target-family}/{bin}{binary-ext}"
+pkg-url = "{repo}/releases/download/v{version}/wasmtime-v{version}-{target-arch}-{target-family}{archive-suffix}"
+bin-dir = "wasmtime-{version}-{target-arch}-{target-family}/{bin}{binary-ext}"
 pkg-fmt = "txz"
 [package.metadata.binstall.overrides.x86_64-apple-darwin]
-pkg-url = "{repo}/releases/download/v{version}/{name}-v{version}-{target-arch}-macos{archive-suffix}"
-bin-dir = "{name}-v{version}-{target-arch}-macos/{bin}{binary-ext}"
+pkg-url = "{repo}/releases/download/v{version}/wasmtime-v{version}-{target-arch}-macos{archive-suffix}"
+bin-dir = "wasmtime-v{version}-{target-arch}-macos/{bin}{binary-ext}"
 [package.metadata.binstall.overrides.aarch64-apple-darwin]
-pkg-url = "{repo}/releases/download/v{version}/{name}-v{version}-{target-arch}-macos{archive-suffix}"
-bin-dir = "{name}-v{version}-{target-arch}-macos/{bin}{binary-ext}"
+pkg-url = "{repo}/releases/download/v{version}/wasmtime-v{version}-{target-arch}-macos{archive-suffix}"
+bin-dir = "wasmtime-v{version}-{target-arch}-macos/{bin}{binary-ext}"
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-fmt = "zip"
 [package.metadata.binstall.overrides.x86_64-pc-windows-gnu]
 pkg-fmt = "zip"
 [package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
-pkg-url = "{repo}/releases/download/v{version}/{name}-v{version}-{target-arch}-musl{archive-suffix}"
-bin-dir = "{name}-v{version}-{target-arch}-musl/{bin}{binary-ext}"
+pkg-url = "{repo}/releases/download/v{version}/wasmtime-v{version}-{target-arch}-musl{archive-suffix}"
+bin-dir = "wasmtime-v{version}-{target-arch}-musl/{bin}{binary-ext}"
 
 [lints]
 workspace = true
@@ -113,7 +113,7 @@ cranelift-codegen = { workspace = true }
 cranelift-reader = { workspace = true }
 toml = { workspace = true }
 similar = { workspace = true }
-libtest-mimic = "0.7.0"
+libtest-mimic = { workspace = true }
 capstone = { workspace = true }
 object = { workspace = true, features = ['std'] }
 wasmtime-test-macros = { path = "crates/test-macros" }
@@ -225,6 +225,7 @@ cranelift-object = { path = "cranelift/object", version = "0.110.0" }
 cranelift-jit = { path = "cranelift/jit", version = "0.110.0" }
 cranelift-fuzzgen = { path = "cranelift/fuzzgen" }
 cranelift-bforest = { path = "cranelift/bforest", version = "0.110.0" }
+cranelift-bitset = { path = "cranelift/bitset", version = "0.110.0" }
 cranelift-control = { path = "cranelift/control", version = "0.110.0" }
 cranelift = { path = "cranelift/umbrella", version = "0.110.0" }
 
@@ -255,15 +256,15 @@ wit-bindgen = { version = "0.26.0", default-features = false }
 wit-bindgen-rust-macro = { version = "0.26.0", default-features = false }
 
 # wasm-tools family:
-wasmparser = { version = "0.209.1", default-features = false }
-wat = "1.209.1"
-wast = "209.0.1"
-wasmprinter = "0.209.1"
-wasm-encoder = "0.209.1"
-wasm-smith = "0.209.1"
-wasm-mutate = "0.209.1"
-wit-parser = "0.209.1"
-wit-component = "0.209.1"
+wasmparser = { version = "0.211.1", default-features = false }
+wat = "1.211.1"
+wast = "211.0.1"
+wasmprinter = "0.211.1"
+wasm-encoder = "0.211.1"
+wasm-smith = "0.211.1"
+wasm-mutate = "0.211.1"
+wit-parser = "0.211.1"
+wit-component = "0.211.1"
 
 # Non-Bytecode Alliance maintained dependencies:
 # --------------------------
@@ -322,6 +323,8 @@ humantime = "2.0.0"
 postcard = { version = "1.0.8", default-features = false, features = ['alloc'] }
 criterion = { version = "0.5.0", default-features = false, features = ["html_reports", "rayon"] }
 rustc-hash = "1.1.0"
+libtest-mimic = "0.7.0"
+semver = { version = "1.0.17", default-features = false }
 
 # =============================================================================
 #
@@ -405,7 +408,7 @@ parallel-compilation = ["wasmtime-cli-flags/parallel-compilation"]
 logging = ["wasmtime-cli-flags/logging"]
 demangle = ["wasmtime/demangle"]
 cranelift = ["wasmtime-cli-flags/cranelift", "dep:wasmtime-cranelift"]
-profiling = ["wasmtime/profiling"]
+profiling = ["wasmtime/profiling", "wasmtime/call-hook"]
 coredump = ["wasmtime-cli-flags/coredump"]
 addr2line = ["wasmtime/addr2line"]
 debug-builtins = ["wasmtime/debug-builtins"]
