@@ -77,8 +77,21 @@ impl<T: Clone + Send + 'static> WasiThreadsCtx<T> {
                     WASI_ENTRY_POINT,
                     thread_start_arg
                 );
+
+                // Initialize Lind here
+                // rustposix::lind_lindrustinit(0);
+                println!(
+                    "spawned thread id = {}; calling start function `{}` with: {}",
+                    wasi_thread_id,
+                    WASI_ENTRY_POINT,
+                    thread_start_arg
+                );
+
                 match thread_entry_point.call(&mut store, (wasi_thread_id, thread_start_arg)) {
-                    Ok(_) => log::trace!("exiting thread id = {} normally", wasi_thread_id),
+                    Ok(_) => { 
+                        log::trace!("exiting thread id = {} normally", wasi_thread_id);
+                        // rustposix::lind_lindrustfinalize();
+                    }
                     Err(e) => {
                         log::trace!("exiting thread id = {} due to error", wasi_thread_id);
                         let e = wasi_common::maybe_exit_on_error(e);
@@ -130,6 +143,7 @@ pub fn add_to_linker<T: Clone + Send + 'static>(
         "wasi",
         "thread-spawn",
         move |mut caller: Caller<'_, T>, start_arg: i32| -> i32 {
+            println!("add_to_linker: {:?}", start_arg);
             log::trace!("new thread requested via `wasi::thread_spawn` call");
             let host = caller.data().clone();
             let ctx = get_cx(caller.data_mut());
