@@ -1022,7 +1022,7 @@ impl Module {
         self.inner.module.unique_id()
     }
 
-    pub(crate) fn offsets(&self) -> &VMOffsets<HostPtr> {
+    pub fn offsets(&self) -> &VMOffsets<HostPtr> {
         &self.inner.offsets
     }
 

@@ -8,7 +8,7 @@ use crate::store::{Store, StoreInner};
 // representation of this `struct` is a pointer for now. If the representation
 // changes then the C API will need to be updated
 #[repr(transparent)]
-pub struct StoreContext<'a, T>(pub(crate) &'a StoreInner<T>);
+pub struct StoreContext<'a, T>(pub &'a StoreInner<T>);
 
 /// A temporary handle to a [`&mut Store<T>`][`Store`].
 ///

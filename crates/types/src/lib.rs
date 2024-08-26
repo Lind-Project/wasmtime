@@ -1030,7 +1030,7 @@ entity_impl!(OwnedMemoryIndex);
 
 /// Index type of a defined global inside the WebAssembly module.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
-pub struct DefinedGlobalIndex(u32);
+pub struct DefinedGlobalIndex(pub u32);
 entity_impl!(DefinedGlobalIndex);
 
 /// Index type of a table (imported or defined) inside the WebAssembly module.

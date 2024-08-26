@@ -32,7 +32,7 @@ use wasmtime_environ::{
 /// available as [`Instance::new`].
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub struct Instance(Stored<InstanceData>);
+pub struct Instance(pub Stored<InstanceData>);
 
 pub(crate) struct InstanceData {
     /// The id of the instance within the store, used to find the original
@@ -204,7 +204,9 @@ impl Instance {
         imports: Imports<'_>,
     ) -> Result<Instance> {
         let (instance, start) = Instance::new_raw(store.0, module, imports)?;
+        println!("new_started_impl");
         if let Some(start) = start {
+            println!("start_raw");
             instance.start_raw(store, start)?;
         }
         Ok(instance)

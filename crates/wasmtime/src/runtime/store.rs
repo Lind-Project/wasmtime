@@ -311,7 +311,7 @@ pub struct StoreOpaque {
 
     engine: Engine,
     runtime_limits: VMRuntimeLimits,
-    instances: Vec<StoreInstance>,
+    pub instances: Vec<StoreInstance>,
     #[cfg(feature = "component-model")]
     num_component_instances: usize,
     signal_handler: Option<Box<SignalHandler<'static>>>,
@@ -474,8 +474,8 @@ impl Drop for AutoAssertNoGc<'_> {
 ///
 /// This is needed to track if the instance was allocated explicitly with the on-demand
 /// instance allocator.
-struct StoreInstance {
-    handle: InstanceHandle,
+pub struct StoreInstance {
+    pub handle: InstanceHandle,
     kind: StoreInstanceKind,
 }
 
@@ -606,6 +606,18 @@ impl<T> Store<T> {
     #[inline]
     pub fn data(&self) -> &T {
         self.inner.data()
+    }
+
+    /// Access the underlying data owned by this `Store`.
+    #[inline]
+    pub fn inner(&self) -> &StoreOpaque {
+        &self.inner.inner
+    }
+
+    /// Access the underlying data owned by this `Store`.
+    #[inline]
+    pub fn inner_mut(&mut self) -> &mut StoreOpaque {
+        &mut self.inner.inner
     }
 
     /// Access the underlying data owned by this `Store`.

@@ -52,7 +52,7 @@ impl RuntimeMemoryCreator for DefaultMemoryCreator {
 /// A linear memory's backing storage.
 ///
 /// This does not a full Wasm linear memory, as it may
-pub trait RuntimeLinearMemory: Send + Sync {
+pub trait RuntimeLinearMemory: Send + Sync + std::any::Any {
     /// Returns the log2 of this memory's page size, in bytes.
     fn page_size_log2(&self) -> u8;
 
@@ -544,13 +544,22 @@ impl Memory {
         store: &mut dyn Store,
         memory_image: Option<&Arc<MemoryImage>>,
     ) -> Result<Self> {
-        let (minimum, maximum) = Self::limit_new(plan, Some(store))?;
-        let allocation = creator.new_memory(plan, minimum, maximum, memory_image)?;
+        // Ok(plan.memory.clone())
+        let cloned_plan = &plan.clone();
+        let (minimum, maximum) = Self::limit_new(cloned_plan, Some(store))?;
+        let allocation = creator.new_memory(cloned_plan, minimum, maximum, memory_image)?;
         let allocation = if plan.memory.shared {
-            Box::new(SharedMemory::wrap(plan, allocation, plan.memory)?)
+            Box::new(SharedMemory::wrap(cloned_plan, allocation, plan.memory.clone())?)
         } else {
             allocation
         };
+
+        // if let Some(specific_instance) = allocation.downcast_ref::<MmapMemory>() {
+        //     println!("memory: {:?}", specific_instance);
+        // } else {
+        //     println!("The instance is not of type MyStruct.");
+        // }
+
         Ok(Memory(allocation))
     }
 

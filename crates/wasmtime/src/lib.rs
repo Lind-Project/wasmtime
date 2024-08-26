@@ -271,7 +271,7 @@
 //!
 //! [manifest]: https://github.com/bytecodealliance/wasmtime/blob/main/crates/wasmtime/Cargo.toml
 
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 #![doc(test(attr(deny(warnings))))]
 #![doc(test(attr(allow(dead_code, unused_variables, unused_mut))))]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
@@ -356,7 +356,7 @@ impl<T> MaybeUninitExt<T> for core::mem::MaybeUninit<T> {
 }
 
 #[cfg(feature = "runtime")]
-mod runtime;
+pub mod runtime;
 #[cfg(feature = "runtime")]
 pub use runtime::*;
 

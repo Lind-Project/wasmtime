@@ -20,4 +20,5 @@ log = { workspace = true }
 rand = "0.8"
 wasi-common = { workspace = true, features = ["exit"]}
 wasmtime = { workspace = true, features = ['threads'] }
+wasmtime-environ = { workspace = true }
 rustposix = { path = "../rustposix" }

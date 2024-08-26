@@ -1,6 +1,6 @@
 //! Runtime library support for Wasmtime.
 
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 #![warn(clippy::cast_sign_loss)]
 
 use crate::prelude::*;
@@ -31,7 +31,7 @@ mod store_box;
 mod sys;
 mod table;
 mod traphandlers;
-mod vmcontext;
+pub mod vmcontext;
 
 mod threads;
 pub use self::threads::*;

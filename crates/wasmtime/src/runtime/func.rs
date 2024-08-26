@@ -1001,6 +1001,25 @@ impl Func {
         unsafe { self.call_impl_do_call(&mut store, params, results) }
     }
 
+    pub fn call_fork(
+        &self,
+        mut store: impl AsContextMut,
+        params: &[Val],
+        results: &mut [Val],
+        host_vmctx: *mut VMContext,
+    ) -> Result<()> {
+        assert!(
+            !store.as_context().async_support(),
+            "must use `call_async` when async support is enabled on the config",
+        );
+        let mut store = store.as_context_mut();
+        let need_gc = self.call_impl_check_args(&mut store, params, results)?;
+        if need_gc {
+            store.0.gc();
+        }
+        unsafe { self.call_impl_do_call_fork(&mut store, params, results, host_vmctx) }
+    }
+
     /// Invokes this function in an "unchecked" fashion, reading parameters and
     /// writing results to `params_and_returns`.
     ///
@@ -1051,6 +1070,44 @@ impl Func {
             params_and_returns,
             params_and_returns_capacity,
         )
+    }
+
+    pub unsafe fn call_unchecked_fork(
+        &self,
+        mut store: impl AsContextMut,
+        params_and_returns: *mut ValRaw,
+        params_and_returns_capacity: usize,
+        host_vmctx: *mut VMContext,
+    ) -> Result<()> {
+        let mut store = store.as_context_mut();
+        let data = &store.0.store_data()[self.0];
+        let func_ref = data.export().func_ref;
+        Self::call_unchecked_raw_fork(
+            &mut store,
+            func_ref,
+            params_and_returns,
+            params_and_returns_capacity,
+            host_vmctx
+        )
+    }
+
+    pub(crate) unsafe fn call_unchecked_raw_fork<T>(
+        store: &mut StoreContextMut<'_, T>,
+        func_ref: NonNull<VMFuncRef>,
+        params_and_returns: *mut ValRaw,
+        params_and_returns_capacity: usize,
+        host_vmctx: *mut VMContext,
+    ) -> Result<()> {
+        println!("call_unchecked_raw_fork");
+        invoke_wasm_and_catch_traps(store, |caller| {
+            let func_ref = func_ref.as_ref();
+            (func_ref.array_call)(
+                func_ref.vmctx,
+                VMOpaqueContext::from_vmcontext(host_vmctx),
+                params_and_returns,
+                params_and_returns_capacity,
+            )
+        })
     }
 
     pub(crate) unsafe fn call_unchecked_raw<T>(
@@ -1240,6 +1297,38 @@ impl Func {
 
         unsafe {
             self.call_unchecked(&mut *store, values_vec.as_mut_ptr(), values_vec_size)?;
+        }
+
+        for ((i, slot), val) in results.iter_mut().enumerate().zip(&values_vec) {
+            let ty = self.ty_ref(store.0).0.results().nth(i).unwrap();
+            *slot = unsafe { Val::from_raw(&mut *store, *val, ty) };
+        }
+        values_vec.truncate(0);
+        store.0.save_wasm_val_raw_storage(values_vec);
+        Ok(())
+    }
+
+    unsafe fn call_impl_do_call_fork<T>(
+        &self,
+        store: &mut StoreContextMut<'_, T>,
+        params: &[Val],
+        results: &mut [Val],
+        host_vmctx: *mut VMContext,
+    ) -> Result<()> {
+        // Store the argument values into `values_vec`.
+        let (ty, _) = self.ty_ref(store.0);
+        let values_vec_size = params.len().max(ty.results().len());
+        let mut values_vec = store.0.take_wasm_val_raw_storage();
+        debug_assert!(values_vec.is_empty());
+        values_vec.resize_with(values_vec_size, || ValRaw::v128(0));
+        for (arg, slot) in params.iter().cloned().zip(&mut values_vec) {
+            unsafe {
+                *slot = arg.to_raw(&mut *store)?;
+            }
+        }
+
+        unsafe {
+            self.call_unchecked_fork(&mut *store, values_vec.as_mut_ptr(), values_vec_size, host_vmctx)?;
         }
 
         for ((i, slot), val) in results.iter_mut().enumerate().zip(&values_vec) {
@@ -1609,6 +1698,7 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
 /// This function may fail if the stack limit can't be set because an
 /// interrupt already happened.
 fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
+    println!("enter wasm");
     // If this is a recursive call, e.g. our stack limit is already set, then
     // we may be able to skip this function.
     //
@@ -1622,6 +1712,7 @@ fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
     if unsafe { *store.0.runtime_limits().stack_limit.get() } != usize::MAX
         && !store.0.async_support()
     {
+        println!("enter wasm None");
         return None;
     }
 
@@ -2008,7 +2099,7 @@ for_each_function_signature!(impl_wasm_ty_list);
 /// Host functions which want access to [`Store`](crate::Store)-level state are
 /// recommended to use this type.
 pub struct Caller<'a, T> {
-    pub(crate) store: StoreContextMut<'a, T>,
+    pub store: StoreContextMut<'a, T>,
     caller: &'a crate::runtime::vm::Instance,
 }
 

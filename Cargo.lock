@@ -2415,6 +2415,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustposix"
+version = "0.0.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "rustversion"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3165,6 +3172,7 @@ dependencies = [
  "log",
  "once_cell",
  "rustix",
+ "rustposix",
  "system-interface",
  "tempfile",
  "test-log",
@@ -3592,6 +3600,7 @@ dependencies = [
  "once_cell",
  "rayon",
  "rustix",
+ "rustposix",
  "serde",
  "serde_derive",
  "serde_json",
@@ -3884,6 +3893,7 @@ dependencies = [
  "io-lifetimes",
  "once_cell",
  "rustix",
+ "rustposix",
  "system-interface",
  "tempfile",
  "test-log",
@@ -3950,8 +3960,10 @@ dependencies = [
  "anyhow",
  "log",
  "rand",
+ "rustposix",
  "wasi-common",
  "wasmtime",
+ "wasmtime-environ",
 ]
 
 [[package]]

@@ -101,6 +101,22 @@ pub struct ExportGlobal {
 unsafe impl Send for ExportGlobal {}
 unsafe impl Sync for ExportGlobal {}
 
+/// A global export value.
+#[derive(Debug, Clone)]
+pub struct ExportGlobalImmut {
+    /// The address of the global storage.
+    pub definition: *const VMGlobalDefinition,
+    /// Pointer to the containing `VMContext`. May be null for host-created
+    /// globals.
+    pub vmctx: *const VMContext,
+    /// The global declaration, used for compatibility checking.
+    pub global: Global,
+}
+
+// See docs on send/sync for `ExportFunction` above.
+unsafe impl Send for ExportGlobalImmut {}
+unsafe impl Sync for ExportGlobalImmut {}
+
 impl From<ExportGlobal> for Export {
     fn from(func: ExportGlobal) -> Export {
         Export::Global(func)
