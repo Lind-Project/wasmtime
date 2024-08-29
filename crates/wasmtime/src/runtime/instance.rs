@@ -204,9 +204,9 @@ impl Instance {
         imports: Imports<'_>,
     ) -> Result<Instance> {
         let (instance, start) = Instance::new_raw(store.0, module, imports)?;
-        println!("new_started_impl");
+        // _println!("new_started_impl");
         if let Some(start) = start {
-            println!("start_raw");
+            // _println!("start_raw");
             instance.start_raw(store, start)?;
         }
         Ok(instance)

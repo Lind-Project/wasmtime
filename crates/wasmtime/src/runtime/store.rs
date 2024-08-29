@@ -111,6 +111,8 @@ pub use self::data::*;
 mod func_refs;
 use func_refs::FuncRefs;
 
+use super::{OnCalledAction, RewindingReturn};
+
 /// A [`Store`] is a collection of WebAssembly instances and host-defined state.
 ///
 /// All WebAssembly instances and items will be attached to and refer to a
@@ -216,12 +218,15 @@ impl CallHook {
 /// should go into `StoreOpaque`.
 pub struct StoreInner<T> {
     /// Generic metadata about the store that doesn't need access to `T`.
-    inner: StoreOpaque,
+    pub inner: StoreOpaque,
 
     limiter: Option<ResourceLimiterInner<T>>,
     call_hook: Option<CallHookInner<T>>,
     epoch_deadline_behavior:
         Option<Box<dyn FnMut(StoreContextMut<T>) -> Result<UpdateDeadline> + Send + Sync>>,
+
+    pub on_called: Option<OnCalledHandler<T>>,
+    
     // for comments about `ManuallyDrop`, see `Store::into_data`
     data: ManuallyDrop<T>,
 }
@@ -279,6 +284,10 @@ impl<T> DerefMut for StoreInner<T> {
     }
 }
 
+pub type OnCalledHandler<T> = Box<
+    dyn FnOnce(&mut StoreContextMut<'_, T>) -> Result<OnCalledAction, Box<dyn std::error::Error + Send + Sync>> + Send + Sync,
+>;
+
 /// Monomorphic storage for a `Store<T>`.
 ///
 /// This structure contains the bulk of the metadata about a `Store`. This is
@@ -319,6 +328,8 @@ pub struct StoreOpaque {
     func_refs: FuncRefs,
     host_globals: Vec<StoreBox<VMHostGlobalContext>>,
 
+    pub rewinding: RewindingReturn,
+
     // GC-related fields.
     gc_store: Option<GcStore>,
     gc_roots: RootSet,
@@ -346,7 +357,7 @@ pub struct StoreOpaque {
     /// `rooted_host_funcs` below. This structure contains pointers which are
     /// otherwise kept alive by the `Arc` references in `rooted_host_funcs`.
     store_data: ManuallyDrop<StoreData>,
-    default_caller: InstanceHandle,
+    pub default_caller: InstanceHandle,
 
     /// Used to optimzed wasm->host calls when the host function is defined with
     /// `Func::new` to avoid allocating a new vector each time a function is
@@ -515,6 +526,10 @@ impl<T> Store<T> {
                 engine: engine.clone(),
                 runtime_limits: Default::default(),
                 instances: Vec::new(),
+                rewinding: RewindingReturn {
+                    rewinding: false,
+                    retval: 0
+                },
                 #[cfg(feature = "component-model")]
                 num_component_instances: 0,
                 signal_handler: None,
@@ -552,6 +567,7 @@ impl<T> Store<T> {
             },
             limiter: None,
             call_hook: None,
+            on_called: None,
             epoch_deadline_behavior: None,
             data: ManuallyDrop::new(data),
         });
@@ -2650,6 +2666,12 @@ impl<T> StoreInner<T> {
         // return into it.
         let epoch_deadline = unsafe { (*self.vmruntime_limits()).epoch_deadline.get_mut() };
         *epoch_deadline = self.engine().current_epoch() + delta;
+    }
+
+    pub fn set_on_called(&mut self, callback: Box<dyn FnOnce(&mut StoreContextMut<'_, T>) -> Result<OnCalledAction, Box<dyn std::error::Error + Send + Sync>> + Send + Sync>)
+    {
+        // _println!("callback set");
+        self.on_called = Some(callback);
     }
 
     fn epoch_deadline_trap(&mut self) {

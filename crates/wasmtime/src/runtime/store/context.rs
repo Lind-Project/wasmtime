@@ -16,7 +16,7 @@ pub struct StoreContext<'a, T>(pub &'a StoreInner<T>);
 /// methods if desired.  For more information, see [`Store`].
 // NB the repr(transparent) here is for the same reason as above.
 #[repr(transparent)]
-pub struct StoreContextMut<'a, T>(pub(crate) &'a mut StoreInner<T>);
+pub struct StoreContextMut<'a, T>(pub &'a mut StoreInner<T>);
 
 impl<'a, T> StoreContextMut<'a, T> {
     /// One of the unsafe lynchpins of Wasmtime.

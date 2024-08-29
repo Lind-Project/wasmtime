@@ -9,6 +9,7 @@ use crate::common::{Profile, RunCommon, RunTarget};
 
 use anyhow::{anyhow, bail, Context as _, Error, Result};
 use clap::Parser;
+use wasmtime_lind_fork::WasiForkCtx;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -667,6 +668,21 @@ impl RunCommand {
             }
         }
 
+        {
+            let linker = match linker {
+                CliLinker::Core(linker) => linker,
+                _ => bail!("lind-fork does not support components yet"),
+            };
+            let module = module.unwrap_core();
+            wasmtime_lind_fork::add_to_linker(linker, store, &module, |host| {
+                host.lind_fork.as_ref().unwrap()
+            })?;
+            store.data_mut().lind_fork = Some(Arc::new(WasiForkCtx::new(
+                module.clone(),
+                Arc::new(linker.clone()),
+            )?));
+        }
+
         if self.run.common.wasi.threads == Some(true) {
             #[cfg(not(feature = "wasi-threads"))]
             {
@@ -783,6 +799,8 @@ struct Host {
     // actually perform any locking on it as we use Mutex::get_mut for every
     // access.
     preview2_ctx: Option<Arc<Mutex<wasmtime_wasi::preview1::WasiP1Ctx>>>,
+
+    lind_fork: Option<Arc<WasiForkCtx<Host>>>,
 
     #[cfg(feature = "wasi-nn")]
     wasi_nn: Option<Arc<WasiNnCtx>>,

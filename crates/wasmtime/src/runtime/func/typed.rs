@@ -1,5 +1,5 @@
 use super::invoke_wasm_and_catch_traps;
-use crate::prelude::*;
+use crate::{prelude::*, OnCalledAction};
 use crate::runtime::vm::{VMFuncRef, VMOpaqueContext};
 use crate::store::{AutoAssertNoGc, StoreOpaque};
 use crate::{
@@ -211,16 +211,42 @@ where
         // the memory go away, so the size matters here for performance.
         let mut captures = (func, storage);
 
-        let result = invoke_wasm_and_catch_traps(store, |caller| {
-            let (func_ref, storage) = &mut captures;
-            let func_ref = func_ref.as_ref();
-            (func_ref.array_call)(
-                func_ref.vmctx,
-                VMOpaqueContext::from_vmcontext(caller),
-                (storage as *mut Storage<_, _>) as *mut ValRaw,
-                mem::size_of_val::<Storage<_, _>>(storage) / mem::size_of::<ValRaw>(),
-            );
-        });
+        let mut result;
+
+        loop {
+            result = invoke_wasm_and_catch_traps(store, |caller| {
+                let (func_ref, storage) = &mut captures;
+                let func_ref = func_ref.as_ref();
+                (func_ref.array_call)(
+                    func_ref.vmctx,
+                    VMOpaqueContext::from_vmcontext(caller),
+                    (storage as *mut Storage<_, _>) as *mut ValRaw,
+                    mem::size_of_val::<Storage<_, _>>(storage) / mem::size_of::<ValRaw>(),
+                );
+            });
+
+            // _println!("invoke_wasm_and_catch_traps done");
+
+            if let Some(callback) = store.0.on_called.take() {
+                // _println!("calling callback");
+                match callback(store) {
+                    Ok(OnCalledAction::InvokeAgain) => {
+                        continue;
+                    },
+                    Ok(OnCalledAction::Finish) => {
+                        break;
+                    },
+                    Ok(OnCalledAction::Trap(trap)) => {
+                        println!("encounter a trap!");
+                    },
+                    Err(err) => {
+                        println!("encounter a error!");
+                    }
+                }
+            }
+            // _println!("no callback found");
+            break;
+        }
 
         let (_, storage) = captures;
         result?;

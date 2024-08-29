@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{prelude::*, OnCalledAction};
 use crate::runtime::vm::{
     ExportFunction, SendSyncPtr, StoreBox, VMArrayCallHostFuncContext, VMContext, VMFuncRef,
     VMFunctionImport, VMOpaqueContext,
@@ -1116,15 +1116,42 @@ impl Func {
         params_and_returns: *mut ValRaw,
         params_and_returns_capacity: usize,
     ) -> Result<()> {
-        invoke_wasm_and_catch_traps(store, |caller| {
-            let func_ref = func_ref.as_ref();
-            (func_ref.array_call)(
-                func_ref.vmctx,
-                caller.cast::<VMOpaqueContext>(),
-                params_and_returns,
-                params_and_returns_capacity,
-            )
-        })
+        let mut result;
+
+        loop {
+            // _println!("calling main");
+            result = invoke_wasm_and_catch_traps(store, |caller| {
+                let func_ref = func_ref.as_ref();
+                (func_ref.array_call)(
+                    func_ref.vmctx,
+                    caller.cast::<VMOpaqueContext>(),
+                    params_and_returns,
+                    params_and_returns_capacity,
+                )
+            });
+
+            if let Some(callback) = store.0.on_called.take() {
+                // _println!("calling callback");
+                match callback(store) {
+                    Ok(OnCalledAction::InvokeAgain) => {
+                        continue;
+                    },
+                    Ok(OnCalledAction::Finish) => {
+                        break;
+                    },
+                    Ok(OnCalledAction::Trap(trap)) => {
+                        println!("encounter a trap!");
+                    },
+                    Err(err) => {
+                        println!("encounter a error!");
+                    }
+                }
+            }
+            // _println!("no callback found");
+            break;
+        }
+
+        result
     }
 
     /// Converts the raw representation of a `funcref` into an `Option<Func>`
@@ -1680,6 +1707,8 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
             store.0.default_caller(),
             closure,
         );
+        // _println!("wasm exit");
+        
         exit_wasm(store, exit);
         store.0.call_hook(CallHook::ReturningFromWasm)?;
         result.map_err(|t| crate::trap::from_runtime_box(store.0, t))
@@ -1698,7 +1727,7 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
 /// This function may fail if the stack limit can't be set because an
 /// interrupt already happened.
 fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
-    println!("enter wasm");
+    // _println!("enter wasm");
     // If this is a recursive call, e.g. our stack limit is already set, then
     // we may be able to skip this function.
     //
@@ -1712,7 +1741,7 @@ fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
     if unsafe { *store.0.runtime_limits().stack_limit.get() } != usize::MAX
         && !store.0.async_support()
     {
-        println!("enter wasm None");
+        // _println!("enter wasm None");
         return None;
     }
 
@@ -1723,7 +1752,15 @@ fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
         return None;
     }
 
+    // unsafe {
+    //     let sp = *store.0.runtime_limits().last_wasm_entry_sp.get();
+    //     if sp != 0 {
+    //         crate::runtime::vm::set_stack_pointer(*store.0.runtime_limits().last_wasm_entry_sp.get());
+    //     }
+    // };
+    
     let stack_pointer = crate::runtime::vm::get_stack_pointer();
+    // println!("stack_pointer: {:?}", stack_pointer);
 
     // Determine the stack pointer where, after which, any wasm code will
     // immediately trap. This is checked on the entry to all wasm functions.
@@ -1746,6 +1783,9 @@ fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
             wasm_stack_limit,
         )
     };
+
+    // println!("wasm_stack_limit: {:?}", wasm_stack_limit);
+    // println!("prev_stack: {:?}", prev_stack);
 
     Some(prev_stack)
 }

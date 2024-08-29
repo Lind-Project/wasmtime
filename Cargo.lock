@@ -3621,6 +3621,7 @@ dependencies = [
  "wasmtime-cranelift",
  "wasmtime-environ",
  "wasmtime-explorer",
+ "wasmtime-lind-fork",
  "wasmtime-test-macros",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
@@ -3837,6 +3838,19 @@ dependencies = [
  "cfg-if",
  "libc",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "wasmtime-lind-fork"
+version = "23.0.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "rand",
+ "rustposix",
+ "wasi-common",
+ "wasmtime",
+ "wasmtime-environ",
 ]
 
 [[package]]
