@@ -174,7 +174,9 @@ impl RunCommand {
 
         // Initialize Lind here
         rustposix::lind_lindrustinit(0);
-
+        if let Some(ctx) = &mut store.data_mut().preview1_ctx {
+            ctx.set_lind_cageid(1);
+        }
 
         // Pre-emptively initialize and install a Tokio runtime ambiently in the
         // environment when executing the module. Without this whenever a WASI
@@ -675,9 +677,13 @@ impl RunCommand {
             };
             let module = module.unwrap_core();
             wasmtime_lind_fork::add_to_linker(linker, store, &module, |host| {
-                host.lind_fork.as_ref().unwrap()
+                host.lind_fork_ctx.as_ref().unwrap()
+            }, |host| {
+                host.preview1_ctx.as_mut().unwrap()
+            }, |host| {
+                host.fork()
             })?;
-            store.data_mut().lind_fork = Some(Arc::new(WasiForkCtx::new(
+            store.data_mut().lind_fork_ctx = Some(Arc::new(WasiForkCtx::new(
                 module.clone(),
                 Arc::new(linker.clone()),
             )?));
@@ -791,8 +797,9 @@ impl RunCommand {
     }
 }
 
+#[allow(missing_docs)]
 #[derive(Default, Clone)]
-struct Host {
+pub struct Host {
     preview1_ctx: Option<wasi_common::WasiCtx>,
 
     // The Mutex is only needed to satisfy the Sync constraint but we never
@@ -800,7 +807,7 @@ struct Host {
     // access.
     preview2_ctx: Option<Arc<Mutex<wasmtime_wasi::preview1::WasiP1Ctx>>>,
 
-    lind_fork: Option<Arc<WasiForkCtx<Host>>>,
+    lind_fork_ctx: Option<Arc<WasiForkCtx<Host>>>,
 
     #[cfg(feature = "wasi-nn")]
     wasi_nn: Option<Arc<WasiNnCtx>>,
@@ -823,6 +830,36 @@ impl Host {
             .expect("wasmtime_wasi is not compatible with threads")
             .get_mut()
             .unwrap()
+    }
+
+    #[allow(missing_docs)]
+    pub fn fork(&self) -> Self {
+        let forked_preview1_ctx = match &self.preview1_ctx {
+            Some(ctx) => Some(ctx.fork()),
+            None => None
+        };
+
+        let forked_lind_fork_ctx = match &self.lind_fork_ctx {
+            Some(ctx) => Some(Arc::new(ctx.fork())),
+            None => None
+        };
+
+        let forked_host = Self {
+            preview1_ctx: forked_preview1_ctx,
+            preview2_ctx: self.preview2_ctx.clone(), // to-do
+            lind_fork_ctx: forked_lind_fork_ctx,
+            #[cfg(feature = "wasi-nn")]
+            wasi_nn: self.wasi_nn.clone(), // to-do
+            #[cfg(feature = "wasi-threads")]
+            wasi_threads: self.wasi_threads.clone(), // to-do
+            #[cfg(feature = "wasi-http")]
+            wasi_http: self.wasi_http.clone(), // to-do
+            limits: self.limits.clone(), // to-do
+            #[cfg(feature = "profiling")]
+            guest_profiler: self.guest_profiler.clone(), // to-do
+        };
+
+        return forked_host;
     }
 }
 

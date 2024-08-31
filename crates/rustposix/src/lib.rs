@@ -174,6 +174,7 @@ pub mod librustposix {
         pub(crate) fn rustposix_thread_init(cageid: u64, signalflag: u64);
 
         pub(crate) fn lind_syscall_api(
+            cageid: u64,
             call_number: u32,
             call_name: u64,
             start_address: u64,
@@ -260,6 +261,7 @@ pub fn lind_write_inner(fd: i32, buf: *const u8, count: usize, cageid: u64) {
 }
 
 pub fn lind_syscall_inner(
+    cageid: u64,
     call_number: u32,
     call_name: u64,
     start_address: u64,
@@ -272,6 +274,7 @@ pub fn lind_syscall_inner(
 ) -> u32 {
     unsafe {
         lind_syscall_api(
+            cageid,
             call_number,
             call_name,
             start_address,
