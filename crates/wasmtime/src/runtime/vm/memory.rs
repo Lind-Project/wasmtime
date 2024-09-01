@@ -554,12 +554,6 @@ impl Memory {
             allocation
         };
 
-        // if let Some(specific_instance) = allocation.downcast_ref::<MmapMemory>() {
-        //     println!("memory: {:?}", specific_instance);
-        // } else {
-        //     println!("The instance is not of type MyStruct.");
-        // }
-
         Ok(Memory(allocation))
     }
 

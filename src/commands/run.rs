@@ -670,25 +670,6 @@ impl RunCommand {
             }
         }
 
-        {
-            let linker = match linker {
-                CliLinker::Core(linker) => linker,
-                _ => bail!("lind-fork does not support components yet"),
-            };
-            let module = module.unwrap_core();
-            wasmtime_lind_fork::add_to_linker(linker, store, &module, |host| {
-                host.lind_fork_ctx.as_ref().unwrap()
-            }, |host| {
-                host.preview1_ctx.as_mut().unwrap()
-            }, |host| {
-                host.fork()
-            })?;
-            store.data_mut().lind_fork_ctx = Some(Arc::new(WasiForkCtx::new(
-                module.clone(),
-                Arc::new(linker.clone()),
-            )?));
-        }
-
         if self.run.common.wasi.threads == Some(true) {
             #[cfg(not(feature = "wasi-threads"))]
             {
@@ -710,11 +691,49 @@ impl RunCommand {
                 wasmtime_wasi_threads::add_to_linker(linker, store, &module, |host| {
                     host.wasi_threads.as_ref().unwrap()
                 })?;
-                store.data_mut().wasi_threads = Some(Arc::new(WasiThreadsCtx::new(
-                    module.clone(),
-                    Arc::new(linker.clone()),
-                )?));
             }
+        }
+
+        {
+            // fn get_cx<'a, T>(host: &'a Host) -> &'a mut WasiForkCtx<Host> {
+            //     host.lind_fork_ctx.as_deref_mut().unwrap()
+            // }
+            
+            let linker = match linker {
+                CliLinker::Core(linker) => linker,
+                _ => bail!("lind-fork does not support components yet"),
+            };
+            let module = module.unwrap_core();
+            wasmtime_lind_fork::add_to_linker(linker, store, &module, |host| {
+                host.lind_fork_ctx.as_ref().unwrap()
+            },|host| {
+                host.lind_fork_ctx.as_mut().unwrap()
+                // host.lind_fork_ctx.as_deref_mut().unwrap()
+                // get_cx(&host)
+            }
+            , |host| {
+                host.preview1_ctx.as_mut().unwrap()
+            }, |host| {
+                host.fork()
+            })?;
+            store.data_mut().lind_fork_ctx = Some(WasiForkCtx::new(
+                module.clone(),
+                linker.clone(),
+            )?);
+        }
+
+        // must create wasi_threads context here, because pre_instance requires all
+        // imports are fully imported/linked to be created
+        if self.run.common.wasi.threads == Some(true) {
+            let linker = match linker {
+                CliLinker::Core(linker) => linker,
+                _ => bail!("wasi-threads does not support components yet"),
+            };
+            let module = module.unwrap_core();
+            store.data_mut().wasi_threads = Some(Arc::new(WasiThreadsCtx::new(
+                module.clone(),
+                Arc::new(linker.clone()),
+            )?));
         }
 
         if self.run.common.wasi.http == Some(true) {
@@ -807,7 +826,7 @@ pub struct Host {
     // access.
     preview2_ctx: Option<Arc<Mutex<wasmtime_wasi::preview1::WasiP1Ctx>>>,
 
-    lind_fork_ctx: Option<Arc<WasiForkCtx<Host>>>,
+    lind_fork_ctx: Option<WasiForkCtx<Host>>,
 
     #[cfg(feature = "wasi-nn")]
     wasi_nn: Option<Arc<WasiNnCtx>>,
@@ -840,7 +859,7 @@ impl Host {
         };
 
         let forked_lind_fork_ctx = match &self.lind_fork_ctx {
-            Some(ctx) => Some(Arc::new(ctx.fork())),
+            Some(ctx) => Some(ctx.fork()),
             None => None
         };
 

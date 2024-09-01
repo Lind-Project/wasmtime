@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use rustposix::lind_syscall_inner;
 use wasi_common::WasiCtx;
+use wasmtime::store::{StoreInner, StoreOpaque};
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Barrier};
 use std::thread;
@@ -17,10 +18,13 @@ const ASYNCIFY_STOP_UNWIND: &str = "asyncify_stop_unwind";
 const ASYNCIFY_START_REWIND: &str = "asyncify_start_rewind";
 const ASYNCIFY_STOP_REWIND: &str = "asyncify_stop_rewind";
 
+#[derive(Clone)]
 pub struct WasiForkCtx<T> {
     // instance_pre seems to be a static data and won't be modified anymore once created
     // so we may not need to make a deep clone of it
-    instance_pre: Arc<InstancePre<T>>,
+    // instance_pre: Arc<InstancePre<T>>,
+    linker: Linker<T>,
+    module: Module,
     
     // cageid is stored at preview1_ctx, so we do not need a duplicated field here
     // cageid: u64,
@@ -33,18 +37,18 @@ pub struct WasiForkCtx<T> {
 }
 
 impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
-    pub fn new(module: Module, linker: Arc<Linker<T>>) -> Result<Self> {
+    pub fn new(module: Module, linker: Linker<T>) -> Result<Self> {
         // this method should only be called once from run.rs, other instances of WasiForkCtx
         // are supposed to be created from fork() method
-        let instance_pre = Arc::new(linker.instantiate_pre(&module)?).clone();
+        // let instance_pre = Arc::new(linker.instantiate_pre(&module)?);
         let pid = 0;
         let next_pid = Arc::new(AtomicI32::new(0));
         let next_cageid = Arc::new(AtomicU64::new(1)); // cageid starts from 1
-        Ok(Self { instance_pre, pid, next_pid, next_cageid })
+        Ok(Self { linker, module: module.clone(), pid, next_pid, next_cageid })
     }
 
     pub fn fork_call(&self, mut caller: &mut Caller<'_, T>,
-                get_cx: impl Fn(&T) -> &WasiForkCtx<T> + Send + Sync + Copy + 'static,
+                get_cx: impl Fn(&mut T) -> &mut WasiForkCtx<T> + Send + Sync + Copy + 'static,
                 get_wasi_cx: impl Fn(&mut T) -> &mut WasiCtx + Send + Sync + Copy + 'static,
                 fork_host: impl Fn(&T) -> T + Send + Sync + Copy + 'static) -> Result<i32> {
         // if !support_asyncify(instance_pre.module()) {
@@ -93,11 +97,6 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
 
             return Ok(retval);
         }
-
-        // let mut child_host = caller.data().clone();
-        let mut child_host = fork_host(caller.data());
-        let mut child_ctx = get_cx(&child_host);
-        let child_pid = child_ctx.pid;
 
         // get the base address of the memory
         let address;
@@ -229,22 +228,33 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
         let cloned_address = address as u64;
 
         // ready for creating the child instance
-        let instance_pre = self.instance_pre.clone();
+        // let instance_pre = Arc::new(self.linker.instantiate_pre(&self.module)?);
+        // let instance_pre = self.instance_pre.clone();
+
+        // let module = instance_pre.module();
+        // let offsets = module.offsets();
+        // let vm_offset = offsets.vmctx_imported_memories_begin();
+        // println!("vmoffsets: {:?}", offsets);
+
+        let mut child_host = fork_host(caller.data());
+        let child_cageid = self.next_cage_id();
+        if let None = child_cageid {
+            println!("running out of cageid!");
+            // return Ok(-1);
+        }
+        let child_cageid = child_cageid.unwrap();
 
         // set up child wasi_ctx cage id
         let child_wasi_ctx = get_wasi_cx(&mut child_host);
         let parent_cageid = child_wasi_ctx.get_lind_cageid();
         // let child_cageid = parent_cageid + 1;
-        let child_cageid = self.next_cage_id();
-        if let None = child_cageid {
-            println!("running out of cageid!");
-            return Ok(-1);
-        }
-        let child_cageid = child_cageid.unwrap();
         child_wasi_ctx.set_lind_cageid(child_cageid);
-        
+
+        let engine = self.module.engine().clone();
+
         // set up unwind callback function
         let store = &mut caller.store.0;
+        let is_parent_thread = store.is_thread();
         store.set_on_called(Box::new(move |mut store| {
             // let unwind_stack_finish;
 
@@ -268,15 +278,41 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
 
             let rewind_pointer: u64 = 0;
 
+            let child_pid = Arc::new(Mutex::new(0));
+            let child_pid_clone = Arc::clone(&child_pid);
+
             // use a barrier to make sure the child has fully copied parent's memory before parent
             // resumes its execution
             let barrier = Arc::new(Barrier::new(2));
             let barrier_clone = Arc::clone(&barrier);
 
-            let builder = thread::Builder::new().name(format!("lind-fork-{}", child_pid));
+            let builder = thread::Builder::new().name(format!("lind-fork-{}", child_cageid));
             builder.spawn(move || {
+                // let mut child_host = caller.data().clone();
+                // let mut child_ctx = get_cx(&child_host);
+
                 // create a new instance
-                let mut store = Store::new(&instance_pre.module().engine(), child_host);
+                // let mut store = Store::new(&engine, child_host);
+                let mut store_inner = Store::<T>::new_inner(&engine);
+
+                let mut child_ctx = get_cx(&mut child_host);
+                let child_pid = child_ctx.pid;
+
+                let mut child_pid_clone = child_pid_clone.lock().unwrap();
+                *child_pid_clone = child_pid;
+                drop(child_pid_clone);
+
+                child_ctx.fork_memory(&store_inner);
+                let instance_pre = Arc::new(child_ctx.linker.instantiate_pre(&child_ctx.module).unwrap());
+                // println!("instantiate");
+
+                let mut store = Store::new_with_inner(&engine, child_host, store_inner);
+
+                // if parent is a thread, so does the child
+                if is_parent_thread {
+                    store.set_is_thread(true);
+                }
+
                 let instance = instance_pre.instantiate(&mut store).unwrap();
 
                 // copy the entire memory from parent, note that the unwind data is also copied together
@@ -287,6 +323,8 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                 for instance_item in &mut store.inner_mut().instances {
                     let vm_instance = instance_item.handle.instance_mut();
 
+                    // from my current understanding, there should be only exactly one memory in case of lind-wasm, its
+                    // either imported_memory in case of threading, or defined_memory if threading is not enabled
                     let defined_memory = vm_instance.get_memory(MemoryIndex::from_u32(0));
                     child_address = defined_memory.base;
                     address_length = defined_memory.current_length.load(Ordering::SeqCst);
@@ -298,6 +336,8 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                     return -1;
                 }
 
+                // println!("cloned_address: {:?}, child_address: {:?}", cloned_address as *mut u8, child_address);
+
                 unsafe { std::ptr::copy_nonoverlapping(cloned_address as *mut u8, child_address, address_length); }
         
                 barrier_clone.wait();
@@ -307,9 +347,6 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
 
                 // get the asyncify_rewind_start and module start function
                 let child_rewind_start;
-                let child_start_func = instance
-                            .get_func(&mut store, "_start")
-                            .ok_or_else(|| anyhow!("no func export named `_start` found")).unwrap();
 
                 match instance.get_typed_func::<i32, ()>(&mut store, ASYNCIFY_START_REWIND) {
                     Ok(func) => {
@@ -328,19 +365,34 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                     rewinding: true,
                     retval: 0,
                 };
-                
-                let ty = child_start_func.ty(&store);
-                        
-                let values = Vec::new();
-                let mut results = vec![Val::null_func_ref(); ty.results().len()];
 
-                let invoke_res = child_start_func
-                    .call(&mut store, &values, &mut results);
+                if store.is_thread() {
+                    // fork inside a thread is possible but not common
+                    // when fork happened inside a thread, it will only fork that specific thread
+                    // and left other threads un-copied.
+                    // to support this, we can just store the thread start args and calling wasi_thread_start
+                    // with the same start args here instead of _start entry.
+                    // however, since this is not a common practice, so we do not support this right now
+                    return -1;
+                } else {
+                    let child_start_func = instance
+                        .get_func(&mut store, "_start")
+                        .ok_or_else(|| anyhow!("no func export named `_start` found")).unwrap();
+
+                    let ty = child_start_func.ty(&store);
+                            
+                    let values = Vec::new();
+                    let mut results = vec![Val::null_func_ref(); ty.results().len()];
+
+                    let invoke_res = child_start_func
+                        .call(&mut store, &values, &mut results);
+                }
 
                 return 0;
             }).unwrap();
 
             barrier.wait();
+            let child_pid = *child_pid.lock().unwrap();
 
             let _ = asyncify_start_rewind_func.call(&mut store, (rewind_pointer as i32));
 
@@ -381,6 +433,19 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
         }
     }
 
+    fn fork_memory(&mut self, store: &StoreOpaque) {
+        self.linker.allow_shadowing(true);
+        for import in self.module.imports() {
+            if let Some(m) = import.ty().memory() {
+                if m.is_shared() {
+                    let mem = SharedMemory::new(self.module.engine(), m.clone()).unwrap();
+                    self.linker.define_with_inner(store, import.module(), import.name(), mem.clone()).unwrap();
+                }
+            }
+        }
+        self.linker.allow_shadowing(false);
+    }
+
     pub fn fork(&self) -> Self {
         let pid = match self.next_process_id() {
             Some(id) => id,
@@ -392,7 +457,9 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
         };
 
         let forked_ctx = Self {
-            instance_pre: self.instance_pre.clone(),
+            // instance_pre: self.instance_pre.clone(),
+            linker: self.linker.clone(),
+            module: self.module.clone(),
             pid,
             next_pid: self.next_pid.clone(),
             next_cageid: self.next_cageid.clone()
@@ -407,6 +474,7 @@ pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync>(
     store: &wasmtime::Store<T>,
     module: &Module,
     get_cx: impl Fn(&T) -> &WasiForkCtx<T> + Send + Sync + Copy + 'static,
+    get_cx_mut: impl Fn(&mut T) -> &mut WasiForkCtx<T> + Send + Sync + Copy + 'static,
     get_wasi_cx: impl Fn(&mut T) -> &mut WasiCtx + Send + Sync + Copy + 'static,
     fork_host: impl Fn(&T) -> T + Send + Sync + Copy + 'static,
 ) -> anyhow::Result<()> {
@@ -417,7 +485,7 @@ pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync>(
             let host = caller.data().clone();
             let ctx = get_cx(&host);
 
-            match ctx.fork_call(&mut caller, get_cx, get_wasi_cx, fork_host) {
+            match ctx.fork_call(&mut caller, get_cx_mut, get_wasi_cx, fork_host) {
                 Ok(pid) => {
                     pid
                 }

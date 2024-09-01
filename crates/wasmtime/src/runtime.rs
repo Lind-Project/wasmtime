@@ -13,7 +13,7 @@ pub(crate) mod linker;
 pub(crate) mod memory;
 pub(crate) mod module;
 pub(crate) mod resources;
-pub(crate) mod store;
+pub mod store;
 pub(crate) mod trampoline;
 pub(crate) mod trap;
 pub(crate) mod type_registry;

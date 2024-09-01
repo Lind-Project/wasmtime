@@ -16,6 +16,8 @@ use core::pin::Pin;
 use hashbrown::hash_map::{Entry, HashMap};
 use log::warn;
 
+use super::store::StoreInner;
+
 /// Structure used to link wasm modules/instances together.
 ///
 /// This structure is used to assist in instantiating a [`Module`]. A [`Linker`]
@@ -106,7 +108,7 @@ impl<T> Clone for Linker<T> {
     }
 }
 
-#[derive(Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Copy, Clone, Hash, PartialEq, Eq, Debug)]
 struct ImportKey {
     name: usize,
     module: usize,
@@ -357,6 +359,18 @@ impl<T> Linker<T> {
         let store = store.as_context();
         let key = self.import_key(module, Some(name));
         self.insert(key, Definition::new(store.0, item.into()))?;
+        Ok(self)
+    }
+
+    pub fn define_with_inner(
+        &mut self,
+        store: &StoreOpaque,
+        module: &str,
+        name: &str,
+        item: impl Into<Extern>,
+    ) -> Result<&mut Self> {
+        let key = self.import_key(module, Some(name));
+        self.insert(key, Definition::new(store, item.into()))?;
         Ok(self)
     }
 

@@ -61,6 +61,7 @@ impl<T: Clone + Send + 'static> WasiThreadsCtx<T> {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 // Each new instance is created in its own store.
                 let mut store = Store::new(&instance_pre.module().engine(), host);
+                store.set_is_thread(true);
                 // println!("-----------------thread memory------------------");
                 let instance = instance_pre.instantiate(&mut store).unwrap();
                 let thread_entry_point = instance

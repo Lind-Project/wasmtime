@@ -226,6 +226,7 @@ pub struct StoreInner<T> {
         Option<Box<dyn FnMut(StoreContextMut<T>) -> Result<UpdateDeadline> + Send + Sync>>,
 
     pub on_called: Option<OnCalledHandler<T>>,
+    is_thread: bool,
     
     // for comments about `ManuallyDrop`, see `Store::into_data`
     data: ManuallyDrop<T>,
@@ -568,6 +569,132 @@ impl<T> Store<T> {
             limiter: None,
             call_hook: None,
             on_called: None,
+            is_thread: false,
+            epoch_deadline_behavior: None,
+            data: ManuallyDrop::new(data),
+        });
+
+        // Wasmtime uses the callee argument to host functions to learn about
+        // the original pointer to the `Store` itself, allowing it to
+        // reconstruct a `StoreContextMut<T>`. When we initially call a `Func`,
+        // however, there's no "callee" to provide. To fix this we allocate a
+        // single "default callee" for the entire `Store`. This is then used as
+        // part of `Func::call` to guarantee that the `callee: *mut VMContext`
+        // is never null.
+        inner.default_caller = {
+            let module = Arc::new(wasmtime_environ::Module::default());
+            let shim = ModuleRuntimeInfo::bare(module);
+            let allocator = OnDemandInstanceAllocator::default();
+            allocator
+                .validate_module(shim.module(), shim.offsets())
+                .unwrap();
+            let mut instance = unsafe {
+                allocator
+                    .allocate_module(InstanceAllocationRequest {
+                        host_state: Box::new(()),
+                        imports: Default::default(),
+                        store: StorePtr::empty(),
+                        runtime_info: &shim,
+                        wmemcheck: engine.config().wmemcheck,
+                        pkey: None,
+                    })
+                    .expect("failed to allocate default callee")
+            };
+
+            // Note the erasure of the lifetime here into `'static`, so in
+            // general usage of this trait object must be strictly bounded to
+            // the `Store` itself, and is a variant that we have to maintain
+            // throughout Wasmtime.
+            unsafe {
+                let traitobj = mem::transmute::<
+                    *mut (dyn crate::runtime::vm::Store + '_),
+                    *mut (dyn crate::runtime::vm::Store + 'static),
+                >(&mut *inner);
+                instance.set_store(traitobj);
+            }
+            instance
+        };
+
+        Self {
+            inner: ManuallyDrop::new(inner),
+        }
+    }
+
+    /// Creates a new [`Store`] to be associated with the given [`Engine`] and
+    /// `data` provided.
+    ///
+    /// The created [`Store`] will place no additional limits on the size of
+    /// linear memories or tables at runtime. Linear memories and tables will
+    /// be allowed to grow to any upper limit specified in their definitions.
+    /// The store will limit the number of instances, linear memories, and
+    /// tables created to 10,000. This can be overridden with the
+    /// [`Store::limiter`] configuration method.
+    pub fn new_inner(engine: &Engine) -> StoreOpaque {
+        let pkey = engine.allocator().next_available_pkey();
+
+        StoreOpaque {
+            _marker: marker::PhantomPinned,
+            engine: engine.clone(),
+            runtime_limits: Default::default(),
+            instances: Vec::new(),
+            rewinding: RewindingReturn {
+                rewinding: false,
+                retval: 0
+            },
+            #[cfg(feature = "component-model")]
+            num_component_instances: 0,
+            signal_handler: None,
+            gc_store: None,
+            gc_roots: RootSet::default(),
+            gc_roots_list: GcRootsList::default(),
+            modules: ModuleRegistry::default(),
+            func_refs: FuncRefs::default(),
+            host_globals: Vec::new(),
+            instance_count: 0,
+            instance_limit: crate::DEFAULT_INSTANCE_LIMIT,
+            memory_count: 0,
+            memory_limit: crate::DEFAULT_MEMORY_LIMIT,
+            table_count: 0,
+            table_limit: crate::DEFAULT_TABLE_LIMIT,
+            #[cfg(feature = "async")]
+            async_state: AsyncState {
+                current_suspend: UnsafeCell::new(ptr::null_mut()),
+                current_poll_cx: UnsafeCell::new(ptr::null_mut()),
+            },
+            fuel_reserve: 0,
+            fuel_yield_interval: None,
+            store_data: ManuallyDrop::new(StoreData::new()),
+            default_caller: InstanceHandle::null(),
+            hostcall_val_storage: Vec::new(),
+            wasm_val_raw_storage: Vec::new(),
+            rooted_host_funcs: ManuallyDrop::new(Vec::new()),
+            pkey,
+            #[cfg(feature = "component-model")]
+            component_host_table: Default::default(),
+            #[cfg(feature = "component-model")]
+            component_calls: Default::default(),
+            #[cfg(feature = "component-model")]
+            host_resource_data: Default::default(),
+        }
+    }
+
+
+    /// Creates a new [`Store`] to be associated with the given [`Engine`] and
+    /// `data` provided.
+    ///
+    /// The created [`Store`] will place no additional limits on the size of
+    /// linear memories or tables at runtime. Linear memories and tables will
+    /// be allowed to grow to any upper limit specified in their definitions.
+    /// The store will limit the number of instances, linear memories, and
+    /// tables created to 10,000. This can be overridden with the
+    /// [`Store::limiter`] configuration method.
+    pub fn new_with_inner(engine: &Engine, data: T, store_inner: StoreOpaque) -> Self {
+        let mut inner = Box::new(StoreInner {
+            inner: store_inner,
+            limiter: None,
+            call_hook: None,
+            on_called: None,
+            is_thread: false,
             epoch_deadline_behavior: None,
             data: ManuallyDrop::new(data),
         });
@@ -640,6 +767,14 @@ impl<T> Store<T> {
     #[inline]
     pub fn data_mut(&mut self) -> &mut T {
         self.inner.data_mut()
+    }
+
+    pub fn is_thread(&self) -> bool {
+        self.inner.is_thread
+    }
+
+    pub fn set_is_thread(&mut self, status: bool) {
+        self.inner.is_thread = status;
     }
 
     /// Consumes this [`Store`], destroying it, and returns the underlying data.
@@ -2672,6 +2807,10 @@ impl<T> StoreInner<T> {
     {
         // _println!("callback set");
         self.on_called = Some(callback);
+    }
+
+    pub fn is_thread(&self) -> bool {
+        self.is_thread
     }
 
     fn epoch_deadline_trap(&mut self) {
