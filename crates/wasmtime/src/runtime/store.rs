@@ -358,7 +358,7 @@ pub struct StoreOpaque {
     /// `rooted_host_funcs` below. This structure contains pointers which are
     /// otherwise kept alive by the `Arc` references in `rooted_host_funcs`.
     store_data: ManuallyDrop<StoreData>,
-    pub default_caller: InstanceHandle,
+    default_caller: InstanceHandle,
 
     /// Used to optimzed wasm->host calls when the host function is defined with
     /// `Func::new` to avoid allocating a new vector each time a function is

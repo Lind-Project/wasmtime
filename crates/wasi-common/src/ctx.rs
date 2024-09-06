@@ -7,7 +7,7 @@ use crate::sync::{clocks_ctx, random_ctx, sched_ctx};
 use crate::table::Table;
 use crate::{Error, StringArrayError};
 use cap_rand::RngCore;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 

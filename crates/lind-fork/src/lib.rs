@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Result};
-use rustposix::lind_syscall_inner;
+use rustposix::{lind_syscall_inner, LindCageManager};
 use wasi_common::WasiCtx;
-use wasmtime::store::{StoreInner, StoreOpaque};
+use wasmtime::store::StoreOpaque;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Barrier};
 use std::thread;
-use wasmtime::{AsContext, AsContextMut, Caller, ExternType, Func, InstancePre, Linker, Module, SharedMemory, Store, StoreContextMut, TypedFunc, Val};
+use wasmtime::{AsContext, AsContextMut, Caller, ExternType, Linker, Module, SharedMemory, Store, Val};
 
 use wasmtime::runtime::Extern;
 use wasmtime::runtime::OnCalledAction;
@@ -25,26 +25,28 @@ pub struct WasiForkCtx<T> {
     // instance_pre: Arc<InstancePre<T>>,
     linker: Linker<T>,
     module: Module,
-    
+
     // cageid is stored at preview1_ctx, so we do not need a duplicated field here
     // cageid: u64,
 
     // current pid associated with this ctx
     pid: i32,
     // next_pid and next_cageid should be shared between processes
-    next_pid: Arc<AtomicI32>,
+    // next_pid: Arc<AtomicI32>,
     next_cageid: Arc<AtomicU64>,
+
+    lind_manager: Arc<LindCageManager>
 }
 
 impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
-    pub fn new(module: Module, linker: Linker<T>) -> Result<Self> {
+    pub fn new(module: Module, linker: Linker<T>, lind_manager: Arc<LindCageManager>) -> Result<Self> {
         // this method should only be called once from run.rs, other instances of WasiForkCtx
         // are supposed to be created from fork() method
         // let instance_pre = Arc::new(linker.instantiate_pre(&module)?);
-        let pid = 0;
-        let next_pid = Arc::new(AtomicI32::new(0));
+        let pid = 1;
+        // let next_pid = Arc::new(AtomicI32::new(0));
         let next_cageid = Arc::new(AtomicU64::new(1)); // cageid starts from 1
-        Ok(Self { linker, module: module.clone(), pid, next_pid, next_cageid })
+        Ok(Self { linker, module: module.clone(), pid, next_cageid, lind_manager: lind_manager.clone() })
     }
 
     pub fn fork_call(&self, mut caller: &mut Caller<'_, T>,
@@ -69,10 +71,10 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                     Extern::Func(asyncify_stop_rewind) => {
                         match asyncify_stop_rewind.typed::<(), ()>(&caller) {
                             Ok(func) => {
-                                func.call(&mut caller, ());
+                                let _res = func.call(&mut caller, ());
                             }
                             Err(err) => {
-                                println!("something went wrong");
+                                println!("the signature of asyncify_stop_rewind is not correct: {:?}", err);
                                 return Ok(-1);
                             }
                         }
@@ -100,7 +102,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
 
         // get the base address of the memory
         let address;
-        if let Some(instance_item) = caller.store.as_context().0.instances.get(0) {
+        if let Some(instance_item) = caller.as_context().0.instances.get(0) {
             let vm_instance = instance_item.handle.instance();
             let defined_memory = vm_instance.get_memory(MemoryIndex::from_u32(0));
             address = defined_memory.base;
@@ -153,10 +155,10 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                                 *(address as *mut u64).add(1) = unwind_data_end;
                             }
     
-                            func.call(&mut caller, (unwind_pointer as i32));
+                            let _res = func.call(&mut caller, unwind_pointer as i32);
                         }
                         Err(err) => {
-                            println!("something went wrong");
+                            println!("the signature of asyncify_start_unwind function is not correct: {:?}", err);
                             return Ok(-1);
                         }
                     }
@@ -185,7 +187,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                             asyncify_stop_unwind_func = func;
                         }
                         Err(err) => {
-                            println!("something went wrong");
+                            println!("the signature of asyncify_stop_unwind function is not correct: {:?}", err);
                             return Ok(-1);
                         }
                     }
@@ -209,7 +211,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                             asyncify_start_rewind_func = func;
                         }
                         Err(err) => {
-                            println!("something went wrong");
+                            println!("the signature of asyncify_start_rewind function is not correct: {:?}", err);
                             return Ok(-1);
                         }
                     }
@@ -274,12 +276,9 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
             // }
 
             // unwind finished and we need to stop the unwind
-            asyncify_stop_unwind_func.call(&mut store, ());
+            let _res = asyncify_stop_unwind_func.call(&mut store, ());
 
             let rewind_pointer: u64 = 0;
-
-            let child_pid = Arc::new(Mutex::new(0));
-            let child_pid_clone = Arc::clone(&child_pid);
 
             // use a barrier to make sure the child has fully copied parent's memory before parent
             // resumes its execution
@@ -293,19 +292,17 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
 
                 // create a new instance
                 // let mut store = Store::new(&engine, child_host);
-                let mut store_inner = Store::<T>::new_inner(&engine);
+                let store_inner = Store::<T>::new_inner(&engine);
 
-                let mut child_ctx = get_cx(&mut child_host);
-                let child_pid = child_ctx.pid;
-
-                let mut child_pid_clone = child_pid_clone.lock().unwrap();
-                *child_pid_clone = child_pid;
-                drop(child_pid_clone);
+                let child_ctx = get_cx(&mut child_host);
+                let child_pid = child_cageid as i32;
+                child_ctx.pid = child_cageid as i32;
 
                 child_ctx.fork_memory(&store_inner);
                 let instance_pre = Arc::new(child_ctx.linker.instantiate_pre(&child_ctx.module).unwrap());
                 // println!("instantiate");
 
+                let lind_manager = child_ctx.lind_manager.clone();
                 let mut store = Store::new_with_inner(&engine, child_host, store_inner);
 
                 // if parent is a thread, so does the child
@@ -339,9 +336,11 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                 // println!("cloned_address: {:?}, child_address: {:?}", cloned_address as *mut u8, child_address);
 
                 unsafe { std::ptr::copy_nonoverlapping(cloned_address as *mut u8, child_address, address_length); }
-        
+
                 barrier_clone.wait();
 
+                // new cage created, increment the cage counter
+                lind_manager.increment();
                 // create the cage in rustposix via rustposix fork
                 lind_syscall_inner(parent_cageid, 68, 0, 0, child_cageid, 0, 0, 0, 0, 0);
 
@@ -352,13 +351,13 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                     Ok(func) => {
                         child_rewind_start = func;
                     },
-                    Err(error) => {
+                    Err(_error) => {
                         return -1;
                     }
                 };
 
                 // rewind the child
-                let _ = child_rewind_start.call(&mut store, (rewind_pointer as i32));
+                let _ = child_rewind_start.call(&mut store, rewind_pointer as i32);
 
                 // set up rewind state and fork return value for child
                 store.as_context_mut().0.rewinding = RewindingReturn {
@@ -380,27 +379,32 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                         .ok_or_else(|| anyhow!("no func export named `_start` found")).unwrap();
 
                     let ty = child_start_func.ty(&store);
-                            
+
                     let values = Vec::new();
                     let mut results = vec![Val::null_func_ref(); ty.results().len()];
 
-                    let invoke_res = child_start_func
+                    let _invoke_res = child_start_func
                         .call(&mut store, &values, &mut results);
+
+                    // exit the cage
+                    // lind_syscall_inner(child_cageid, 30, 0, 0, 0, 0, 0, 0, 0, 0);
+
+                    // the cage just exited, decrement the cage counter
+                    lind_manager.decrement();
                 }
 
                 return 0;
             }).unwrap();
 
             barrier.wait();
-            let child_pid = *child_pid.lock().unwrap();
 
-            let _ = asyncify_start_rewind_func.call(&mut store, (rewind_pointer as i32));
+            let _ = asyncify_start_rewind_func.call(&mut store, rewind_pointer as i32);
 
             // set up rewind state and fork return value for parent
             store.0.inner.rewinding = RewindingReturn {
                 rewinding: true,
-                retval: child_pid,
-            };;
+                retval: child_cageid as i32,
+            };
 
             // return InvokeAgain here would make parent re-invoke main
             return Ok(OnCalledAction::InvokeAgain);
@@ -409,17 +413,21 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
         return Ok(0);
     }
 
-    fn next_process_id(&self) -> Option<i32> {
-        match self
-            .next_pid
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| match v {
-                ..=0x1ffffffe => Some(v + 1),
-                _ => None,
-            }) {
-            Ok(v) => Some(v + 1),
-            Err(_) => None,
-        }
+    pub fn getpid(&self) -> i32 {
+        self.pid
     }
+
+    // fn next_process_id(&self) -> Option<i32> {
+    //     match self
+    //         .next_pid
+    //         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| match v {
+    //             ..=0x1ffffffe => Some(v + 1),
+    //             _ => None,
+    //         }) {
+    //         Ok(v) => Some(v + 1),
+    //         Err(_) => None,
+    //     }
+    // }
 
     fn next_cage_id(&self) -> Option<u64> {
         match self
@@ -447,22 +455,23 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
     }
 
     pub fn fork(&self) -> Self {
-        let pid = match self.next_process_id() {
-            Some(id) => id,
-            None => {
-                // to-do: should have a better error handling
-                // instead of just panicking here
-                panic!("running out of process id");
-            }
-        };
+        // let pid = match self.next_process_id() {
+        //     Some(id) => id,
+        //     None => {
+        //         // to-do: should have a better error handling
+        //         // instead of just panicking here
+        //         panic!("running out of process id");
+        //     }
+        // };
 
         let forked_ctx = Self {
             // instance_pre: self.instance_pre.clone(),
             linker: self.linker.clone(),
             module: self.module.clone(),
-            pid,
-            next_pid: self.next_pid.clone(),
-            next_cageid: self.next_cageid.clone()
+            pid: 0,
+            // next_pid: self.next_pid.clone(),
+            next_cageid: self.next_cageid.clone(),
+            lind_manager: self.lind_manager.clone()
         };
 
         return forked_ctx;
@@ -471,8 +480,6 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
 
 pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync>(
     linker: &mut wasmtime::Linker<T>,
-    store: &wasmtime::Store<T>,
-    module: &Module,
     get_cx: impl Fn(&T) -> &WasiForkCtx<T> + Send + Sync + Copy + 'static,
     get_cx_mut: impl Fn(&mut T) -> &mut WasiForkCtx<T> + Send + Sync + Copy + 'static,
     get_wasi_cx: impl Fn(&mut T) -> &mut WasiCtx + Send + Sync + Copy + 'static,
@@ -494,6 +501,17 @@ pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync>(
                     -1
                 }
             }
+        },
+    )?;
+
+    linker.func_wrap(
+        "wasix",
+        "lind-getpid",
+        move |mut caller: Caller<'_, T>, _: i32| -> i32 {
+            let host = caller.data().clone();
+            let ctx = get_cx(&host);
+
+            return ctx.getpid();
         },
     )?;
 

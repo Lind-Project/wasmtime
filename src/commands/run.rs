@@ -12,11 +12,13 @@ use clap::Parser;
 use wasmtime_lind_fork::WasiForkCtx;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use wasi_common::sync::{ambient_authority, Dir, TcpListener, WasiCtxBuilder};
 use wasmtime::{Engine, Func, Module, Store, StoreLimits, Val, ValType};
 use wasmtime_wasi::WasiView;
+
+use rustposix::LindCageManager;
 
 #[cfg(feature = "wasi-nn")]
 use wasmtime_wasi_nn::WasiNnCtx;
@@ -126,7 +128,8 @@ impl RunCommand {
 
         let host = Host::default();
         let mut store = Store::new(&engine, host);
-        self.populate_with_wasi(&mut linker, &mut store, &main)?;
+        let mut lind_manager = Arc::new(LindCageManager::new(0));
+        self.populate_with_wasi(&mut linker, &mut store, &main, lind_manager.clone())?;
 
         store.data_mut().limits = self.run.store_limits();
         store.limiter(|t| &mut t.limits);
@@ -177,6 +180,8 @@ impl RunCommand {
         if let Some(ctx) = &mut store.data_mut().preview1_ctx {
             ctx.set_lind_cageid(1);
         }
+        // new cage is created
+        lind_manager.increment();
 
         // Pre-emptively initialize and install a Tokio runtime ambiently in the
         // environment when executing the module. Without this whenever a WASI
@@ -199,6 +204,13 @@ impl RunCommand {
         // Load the main wasm module.
         match result {
             Ok(()) => {
+                // exit the cage
+                // rustposix::lind_syscall_inner(1, 30, 0, 0, 0, 0, 0, 0, 0, 0);
+                // main cage exits
+                lind_manager.decrement();
+                // we wait until all other cage exits
+                lind_manager.wait();
+                // after all cage exits, finalize the lind
                 rustposix::lind_lindrustfinalize();
             },
             Err(e) => {
@@ -572,6 +584,7 @@ impl RunCommand {
         linker: &mut CliLinker,
         store: &mut Store<Host>,
         module: &RunTarget,
+        lind_manager: Arc<LindCageManager>
     ) -> Result<()> {
         let mut cli = self.run.common.wasi.cli;
 
@@ -704,7 +717,7 @@ impl RunCommand {
                 _ => bail!("lind-fork does not support components yet"),
             };
             let module = module.unwrap_core();
-            wasmtime_lind_fork::add_to_linker(linker, store, &module, |host| {
+            wasmtime_lind_fork::add_to_linker(linker, |host| {
                 host.lind_fork_ctx.as_ref().unwrap()
             },|host| {
                 host.lind_fork_ctx.as_mut().unwrap()
@@ -719,6 +732,7 @@ impl RunCommand {
             store.data_mut().lind_fork_ctx = Some(WasiForkCtx::new(
                 module.clone(),
                 linker.clone(),
+                lind_manager,
             )?);
         }
 
