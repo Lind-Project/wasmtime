@@ -1,7 +1,7 @@
 use crate::{Error, ErrorExt};
 use wiggle::{GuestMemory, GuestPtr};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct StringArray {
     elems: Vec<String>,
 }

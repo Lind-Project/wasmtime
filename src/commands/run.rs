@@ -12,6 +12,7 @@ use clap::Parser;
 use wasmtime_lind_fork::WasiForkCtx;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use wasi_common::sync::{ambient_authority, Dir, TcpListener, WasiCtxBuilder};
@@ -38,7 +39,7 @@ fn parse_preloads(s: &str) -> Result<(String, PathBuf)> {
 }
 
 /// Runs a WebAssembly module
-#[derive(Parser, PartialEq)]
+#[derive(Parser, PartialEq, Clone)]
 pub struct RunCommand {
     #[command(flatten)]
     #[allow(missing_docs)]
@@ -129,7 +130,7 @@ impl RunCommand {
         let host = Host::default();
         let mut store = Store::new(&engine, host);
         let mut lind_manager = Arc::new(LindCageManager::new(0));
-        self.populate_with_wasi(&mut linker, &mut store, &main, lind_manager.clone())?;
+        self.populate_with_wasi(&mut linker, &mut store, &main, lind_manager.clone(), None, None)?;
 
         store.data_mut().limits = self.run.store_limits();
         store.limiter(|t| &mut t.limits);
@@ -203,9 +204,9 @@ impl RunCommand {
 
         // Load the main wasm module.
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 // exit the cage
-                // rustposix::lind_syscall_inner(1, 30, 0, 0, 0, 0, 0, 0, 0, 0);
+                rustposix::lind_exit(1, 0);
                 // main cage exits
                 lind_manager.decrement();
                 // we wait until all other cage exits
@@ -245,6 +246,131 @@ impl RunCommand {
         }
 
         Ok(())
+    }
+
+    fn execute_with_lind(mut self, lind_manager: Arc<LindCageManager>, pid: i32, next_cageid: Arc<AtomicU64>) -> Result<Vec<Val>> {
+        // self.run.common.init_logging()?;
+
+        let mut config = self.run.common.config(None, None)?;
+
+        if self.run.common.wasm.timeout.is_some() {
+            config.epoch_interruption(true);
+        }
+        match self.run.profile {
+            Some(Profile::Native(s)) => {
+                config.profiler(s);
+            }
+            Some(Profile::Guest { .. }) => {
+                // Further configured down below as well.
+                config.epoch_interruption(true);
+            }
+            None => {}
+        }
+
+        let engine = Engine::new(&config)?;
+
+        // Read the wasm module binary either as `*.wat` or a raw binary.
+        let main = self
+            .run
+            .load_module(&engine, self.module_and_args[0].as_ref())?;
+
+        // Validate coredump-on-trap argument
+        if let Some(path) = &self.run.common.debug.coredump {
+            if path.contains("%") {
+                bail!("the coredump-on-trap path does not support patterns yet.")
+            }
+        }
+
+        let mut linker = match &main {
+            RunTarget::Core(_) => CliLinker::Core(wasmtime::Linker::new(&engine)),
+            #[cfg(feature = "component-model")]
+            RunTarget::Component(_) => {
+                CliLinker::Component(wasmtime::component::Linker::new(&engine))
+            }
+        };
+        if let Some(enable) = self.run.common.wasm.unknown_exports_allow {
+            match &mut linker {
+                CliLinker::Core(l) => {
+                    l.allow_unknown_exports(enable);
+                }
+                #[cfg(feature = "component-model")]
+                CliLinker::Component(_) => {
+                    bail!("--allow-unknown-exports not supported with components");
+                }
+            }
+        }
+
+        let host = Host::default();
+        let mut store = Store::new(&engine, host);
+        self.populate_with_wasi(&mut linker, &mut store, &main, lind_manager.clone(), Some(pid), Some(next_cageid))?;
+
+        store.data_mut().limits = self.run.store_limits();
+        store.limiter(|t| &mut t.limits);
+
+        // If fuel has been configured, we want to add the configured
+        // fuel amount to this store.
+        if let Some(fuel) = self.run.common.wasm.fuel {
+            store.set_fuel(fuel)?;
+        }
+
+        // Load the preload wasm modules.
+        let mut modules = Vec::new();
+        if let RunTarget::Core(m) = &main {
+            modules.push((String::new(), m.clone()));
+        }
+        for (name, path) in self.preloads.iter() {
+            // Read the wasm module binary either as `*.wat` or a raw binary
+            let module = match self.run.load_module(&engine, path)? {
+                RunTarget::Core(m) => m,
+                #[cfg(feature = "component-model")]
+                RunTarget::Component(_) => bail!("components cannot be loaded with `--preload`"),
+            };
+            modules.push((name.clone(), module.clone()));
+
+            // Add the module's functions to the linker.
+            match &mut linker {
+                #[cfg(feature = "cranelift")]
+                CliLinker::Core(linker) => {
+                    linker.module(&mut store, name, &module).context(format!(
+                        "failed to process preload `{}` at `{}`",
+                        name,
+                        path.display()
+                    ))?;
+                }
+                #[cfg(not(feature = "cranelift"))]
+                CliLinker::Core(_) => {
+                    bail!("support for --preload disabled at compile time");
+                }
+                #[cfg(feature = "component-model")]
+                CliLinker::Component(_) => {
+                    bail!("--preload cannot be used with components");
+                }
+            }
+        }
+
+        if let Some(ctx) = &mut store.data_mut().preview1_ctx {
+            ctx.set_lind_cageid(pid as u64);
+        }
+
+        // Pre-emptively initialize and install a Tokio runtime ambiently in the
+        // environment when executing the module. Without this whenever a WASI
+        // call is made that needs to block on a future a Tokio runtime is
+        // configured and entered, and this appears to be slower than simply
+        // picking an existing runtime out of the environment and using that.
+        // The goal of this is to improve the performance of WASI-related
+        // operations that block in the CLI since the CLI doesn't use async to
+        // invoke WebAssembly.
+        let result = wasmtime_wasi::runtime::with_ambient_tokio_runtime(|| {
+            self.load_main_module(&mut store, &mut linker, &main, modules)
+                .with_context(|| {
+                    format!(
+                        "failed to run child module `{}`",
+                        self.module_and_args[0].to_string_lossy()
+                    )
+                })
+        });
+
+        result
     }
 
     fn compute_argv(&self) -> Result<Vec<String>> {
@@ -378,7 +504,7 @@ impl RunCommand {
         linker: &mut CliLinker,
         module: &RunTarget,
         modules: Vec<(String, Module)>,
-    ) -> Result<()> {
+    ) -> Result<Vec<Val>> {
         // The main module might be allowed to have unknown imports, which
         // should be defined as traps:
         if self.run.common.wasm.unknown_imports_trap == Some(true) {
@@ -438,7 +564,7 @@ impl RunCommand {
 
                 match func {
                     Some(func) => self.invoke_func(store, func),
-                    None => Ok(()),
+                    None => Ok(vec![]),
                 }
             }
             #[cfg(feature = "component-model")]
@@ -463,7 +589,7 @@ impl RunCommand {
                 // Translate the `Result<(),()>` produced by wasm into a feigned
                 // explicit exit here with status 1 if `Err(())` is returned.
                 result.and_then(|wasm_result| match wasm_result {
-                    Ok(()) => Ok(()),
+                    Ok(()) => Ok(vec![]),
                     Err(()) => Err(wasmtime_wasi::I32Exit(1).into()),
                 })
             }
@@ -473,7 +599,7 @@ impl RunCommand {
         result
     }
 
-    fn invoke_func(&self, store: &mut Store<Host>, func: Func) -> Result<()> {
+    fn invoke_func(&self, store: &mut Store<Host>, func: Func) -> Result<Vec<Val>> {
         let ty = func.ty(&store);
         if ty.params().len() > 0 {
             eprintln!(
@@ -526,30 +652,30 @@ impl RunCommand {
             return Err(self.handle_core_dump(&mut *store, err));
         }
 
-        if !results.is_empty() {
-            eprintln!(
-                "warning: using `--invoke` with a function that returns values \
-                 is experimental and may break in the future"
-            );
-        }
+        // if !results.is_empty() {
+        //     eprintln!(
+        //         "warning: using `--invoke` with a function that returns values \
+        //          is experimental and may break in the future"
+        //     );
+        // }
 
-        for result in results {
-            match result {
-                Val::I32(i) => println!("{}", i),
-                Val::I64(i) => println!("{}", i),
-                Val::F32(f) => println!("{}", f32::from_bits(f)),
-                Val::F64(f) => println!("{}", f64::from_bits(f)),
-                Val::V128(i) => println!("{}", i.as_u128()),
-                Val::ExternRef(None) => println!("<null externref>"),
-                Val::ExternRef(Some(_)) => println!("<externref>"),
-                Val::FuncRef(None) => println!("<null funcref>"),
-                Val::FuncRef(Some(_)) => println!("<funcref>"),
-                Val::AnyRef(None) => println!("<null anyref>"),
-                Val::AnyRef(Some(_)) => println!("<anyref>"),
-            }
-        }
+        // for result in results {
+        //     match result {
+        //         Val::I32(i) => println!("{}", i),
+        //         Val::I64(i) => println!("{}", i),
+        //         Val::F32(f) => println!("{}", f32::from_bits(f)),
+        //         Val::F64(f) => println!("{}", f64::from_bits(f)),
+        //         Val::V128(i) => println!("{}", i.as_u128()),
+        //         Val::ExternRef(None) => println!("<null externref>"),
+        //         Val::ExternRef(Some(_)) => println!("<externref>"),
+        //         Val::FuncRef(None) => println!("<null funcref>"),
+        //         Val::FuncRef(Some(_)) => println!("<funcref>"),
+        //         Val::AnyRef(None) => println!("<null anyref>"),
+        //         Val::AnyRef(Some(_)) => println!("<anyref>"),
+        //     }
+        // }
 
-        Ok(())
+        Ok(results)
     }
 
     #[cfg(feature = "coredump")]
@@ -584,7 +710,9 @@ impl RunCommand {
         linker: &mut CliLinker,
         store: &mut Store<Host>,
         module: &RunTarget,
-        lind_manager: Arc<LindCageManager>
+        lind_manager: Arc<LindCageManager>,
+        pid: Option<i32>,
+        next_cageid: Option<Arc<AtomicU64>>
     ) -> Result<()> {
         let mut cli = self.run.common.wasi.cli;
 
@@ -717,7 +845,18 @@ impl RunCommand {
                 _ => bail!("lind-fork does not support components yet"),
             };
             let module = module.unwrap_core();
-            wasmtime_lind_fork::add_to_linker(linker, |host| {
+
+            // let exec_closure = {
+            //     let run_command = self.clone();
+            //     move |engine, path, pid, next_cageid, lind_manager| {
+            //         let mut new_run_command = run_command.clone();
+            //         new_run_command.module_and_args = vec![OsString::from(path)];
+            //         new_run_command.execute_with_lind(lind_manager, pid, next_cageid);
+            //         Ok(())
+            //     }
+            // };
+
+            wasmtime_lind_fork::add_to_linker::<Host, RunCommand>(linker, |host| {
                 host.lind_fork_ctx.as_ref().unwrap()
             },|host| {
                 host.lind_fork_ctx.as_mut().unwrap()
@@ -728,12 +867,31 @@ impl RunCommand {
                 host.preview1_ctx.as_mut().unwrap()
             }, |host| {
                 host.fork()
+            }, |run_command, path, args, pid, next_cageid, lind_manager| {
+                    let mut new_run_command = run_command.clone();
+                    new_run_command.module_and_args = vec![OsString::from(path)];
+                    for arg in args.iter().skip(1) {
+                        new_run_command.module_and_args.push(OsString::from(arg));
+                    }
+                    new_run_command.execute_with_lind(lind_manager.clone(), pid, next_cageid.clone())
             })?;
-            store.data_mut().lind_fork_ctx = Some(WasiForkCtx::new(
-                module.clone(),
-                linker.clone(),
-                lind_manager,
-            )?);
+            if let Some(pid) = pid {
+                store.data_mut().lind_fork_ctx = Some(WasiForkCtx::new_with_pid(
+                    module.clone(),
+                    linker.clone(),
+                    lind_manager,
+                    self.clone(),
+                    pid,
+                    next_cageid.unwrap()
+                )?);
+            } else {
+                store.data_mut().lind_fork_ctx = Some(WasiForkCtx::new(
+                    module.clone(),
+                    linker.clone(),
+                    lind_manager,
+                    self.clone()
+                )?);
+            }
         }
 
         // must create wasi_threads context here, because pre_instance requires all
@@ -840,7 +998,7 @@ pub struct Host {
     // access.
     preview2_ctx: Option<Arc<Mutex<wasmtime_wasi::preview1::WasiP1Ctx>>>,
 
-    lind_fork_ctx: Option<WasiForkCtx<Host>>,
+    lind_fork_ctx: Option<WasiForkCtx<Host, RunCommand>>,
 
     #[cfg(feature = "wasi-nn")]
     wasi_nn: Option<Arc<WasiNnCtx>>,

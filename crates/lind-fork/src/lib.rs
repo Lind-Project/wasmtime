@@ -1,11 +1,13 @@
 use anyhow::{anyhow, Result};
-use rustposix::{lind_syscall_inner, LindCageManager};
+use rustposix::{lind_exec, lind_exit, lind_fork, LindCageManager};
 use wasi_common::WasiCtx;
 use wasmtime::store::StoreOpaque;
+use std::ffi::CStr;
+use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Barrier};
 use std::thread;
-use wasmtime::{AsContext, AsContextMut, Caller, ExternType, Linker, Module, SharedMemory, Store, Val};
+use wasmtime::{AsContext, AsContextMut, Caller, Engine, ExternType, Linker, Module, SharedMemory, Store, Val};
 
 use wasmtime::runtime::Extern;
 use wasmtime::runtime::OnCalledAction;
@@ -19,7 +21,7 @@ const ASYNCIFY_START_REWIND: &str = "asyncify_start_rewind";
 const ASYNCIFY_STOP_REWIND: &str = "asyncify_stop_rewind";
 
 #[derive(Clone)]
-pub struct WasiForkCtx<T> {
+pub struct WasiForkCtx<T, U> {
     // instance_pre seems to be a static data and won't be modified anymore once created
     // so we may not need to make a deep clone of it
     // instance_pre: Arc<InstancePre<T>>,
@@ -35,22 +37,28 @@ pub struct WasiForkCtx<T> {
     // next_pid: Arc<AtomicI32>,
     next_cageid: Arc<AtomicU64>,
 
-    lind_manager: Arc<LindCageManager>
+    lind_manager: Arc<LindCageManager>,
+
+    run_command: U
 }
 
-impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
-    pub fn new(module: Module, linker: Linker<T>, lind_manager: Arc<LindCageManager>) -> Result<Self> {
+impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T, U> {
+    pub fn new(module: Module, linker: Linker<T>, lind_manager: Arc<LindCageManager>, run_command: U) -> Result<Self> {
         // this method should only be called once from run.rs, other instances of WasiForkCtx
         // are supposed to be created from fork() method
         // let instance_pre = Arc::new(linker.instantiate_pre(&module)?);
         let pid = 1;
         // let next_pid = Arc::new(AtomicI32::new(0));
         let next_cageid = Arc::new(AtomicU64::new(1)); // cageid starts from 1
-        Ok(Self { linker, module: module.clone(), pid, next_cageid, lind_manager: lind_manager.clone() })
+        Ok(Self { linker, module: module.clone(), pid, next_cageid, lind_manager: lind_manager.clone(), run_command })
+    }
+
+    pub fn new_with_pid(module: Module, linker: Linker<T>, lind_manager: Arc<LindCageManager>, run_command: U, pid: i32, next_cageid: Arc<AtomicU64>) -> Result<Self> {
+        Ok(Self { linker, module: module.clone(), pid, next_cageid, lind_manager: lind_manager.clone(), run_command })
     }
 
     pub fn fork_call(&self, mut caller: &mut Caller<'_, T>,
-                get_cx: impl Fn(&mut T) -> &mut WasiForkCtx<T> + Send + Sync + Copy + 'static,
+                get_cx: impl Fn(&mut T) -> &mut WasiForkCtx<T, U> + Send + Sync + Copy + 'static,
                 get_wasi_cx: impl Fn(&mut T) -> &mut WasiCtx + Send + Sync + Copy + 'static,
                 fork_host: impl Fn(&T) -> T + Send + Sync + Copy + 'static) -> Result<i32> {
         // if !support_asyncify(instance_pre.module()) {
@@ -337,12 +345,12 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
 
                 unsafe { std::ptr::copy_nonoverlapping(cloned_address as *mut u8, child_address, address_length); }
 
-                barrier_clone.wait();
-
                 // new cage created, increment the cage counter
                 lind_manager.increment();
                 // create the cage in rustposix via rustposix fork
-                lind_syscall_inner(parent_cageid, 68, 0, 0, child_cageid, 0, 0, 0, 0, 0);
+                lind_fork(parent_cageid, child_cageid);
+
+                barrier_clone.wait();
 
                 // get the asyncify_rewind_start and module start function
                 let child_rewind_start;
@@ -386,8 +394,16 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
                     let _invoke_res = child_start_func
                         .call(&mut store, &values, &mut results);
 
-                    // exit the cage
-                    // lind_syscall_inner(child_cageid, 30, 0, 0, 0, 0, 0, 0, 0, 0);
+                    let exit_code = results.get(0).expect("_start function does not have a return value");
+                    match exit_code {
+                        Val::I32(val) => {
+                            // exit the cage
+                            lind_exit(child_cageid, *val);
+                        },
+                        _ => {
+                            println!("unexpected _start function return type!");
+                        }
+                    }
 
                     // the cage just exited, decrement the cage counter
                     lind_manager.decrement();
@@ -408,6 +424,180 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
 
             // return InvokeAgain here would make parent re-invoke main
             return Ok(OnCalledAction::InvokeAgain);
+        }));
+
+        return Ok(0);
+    }
+
+    pub fn execv_call(&self, mut caller: &mut Caller<'_, T>,
+                             path: i64,
+                             argv: i64,
+                             exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>) -> Result<Vec<Val>> + Send + Sync + Copy + 'static,
+                     ) -> Result<i32> {
+        // get the base address of the memory
+        let address;
+        if let Some(instance_item) = caller.as_context().0.instances.get(0) {
+            let vm_instance = instance_item.handle.instance();
+            let defined_memory = vm_instance.get_memory(MemoryIndex::from_u32(0));
+            address = defined_memory.base;
+        } else {
+            println!("no memory found");
+            return Ok(-1);
+        }
+
+        let path_ptr = ((address as i64) + path) as *const u8;
+        let path_str;
+
+        // NOTE: the address passed from wasm module is 32-bit address
+        let argv_ptr = ((address as i64) + argv) as *const *const u8;
+        let mut args = Vec::new();
+
+        unsafe {
+            // Manually find the null terminator
+            let mut len = 0;
+            while *path_ptr.add(len) != 0 {
+                len += 1;
+            }
+    
+            // Create a byte slice from the pointer
+            let byte_slice = std::slice::from_raw_parts(path_ptr, len);
+    
+            // Convert the byte slice to a Rust string slice
+            path_str = std::str::from_utf8(byte_slice).unwrap();
+
+            let mut i = 0;
+
+            // Iterate over argv until we encounter a NULL pointer
+            loop {
+                let c_str = *(argv_ptr as *const i32).add(i) as *const i32;
+
+                if c_str.is_null() {
+                    break;  // Stop if we encounter NULL
+                }
+
+                let arg_ptr = ((address as i64) + (c_str as i64)) as *const c_char;
+
+                // Convert it to a Rust String
+                let arg = unsafe { CStr::from_ptr(arg_ptr) }
+                    .to_string_lossy()
+                    .into_owned();
+                args.push(arg);
+
+                i += 1;  // Move to the next argument
+            }
+    
+            // println!("path: {}", path_str);
+            // println!("args: {:?}", args);
+        }
+
+        // get the stack pointer global
+        let stack_pointer;
+        if let Some(sp_extern) = caller.get_export("__stack_pointer") {
+            match sp_extern {
+                Extern::Global(sp) => {
+                    match sp.get(&mut caller) {
+                        Val::I32(val) => {
+                            stack_pointer = val;
+                        }
+                        _ => {
+                            println!("__stack_pointer export is not an i32");
+                            return Ok(-1);
+                        }
+                    }
+                },
+                _ => {
+                    println!("__stack_pointer export is not a Global");
+                    return Ok(-1);
+                }
+            }
+        }
+        else {
+            println!("__stack_pointer export not found");
+            return Ok(-1);
+        }
+
+        // start unwind
+        if let Some(asyncify_start_unwind_extern) = caller.get_export(ASYNCIFY_START_UNWIND) {
+            match asyncify_start_unwind_extern {
+                Extern::Func(asyncify_start_unwind) => {
+                    match asyncify_start_unwind.typed::<i32, ()>(&caller) {
+                        Ok(func) => {
+                            let unwind_pointer: u64 = 0;
+                            // 8 because we need to store unwind_data_start and unwind_data_end
+                            // at the beginning of the unwind stack as the parameter for asyncify_start_unwind
+                            // each of them are u64, so together is 8 bytes
+                            let unwind_data_start: u64 = unwind_pointer + 8;
+                            let unwind_data_end: u64 = stack_pointer as u64;
+    
+                            unsafe {
+                                *(address as *mut u64) = unwind_data_start;
+                                *(address as *mut u64).add(1) = unwind_data_end;
+                            }
+    
+                            let _res = func.call(&mut caller, unwind_pointer as i32);
+                        }
+                        Err(err) => {
+                            println!("the signature of asyncify_start_unwind function is not correct: {:?}", err);
+                            return Ok(-1);
+                        }
+                    }
+                },
+                _ => {
+                    println!("asyncify_start_unwind export is not a function");
+                    return Ok(-1);
+                }
+            }
+        }
+        else {
+            println!("asyncify_start_unwind export not found");
+            return Ok(-1);
+        }
+
+        // get the asyncify_stop_unwind and asyncify_start_rewind, which will later
+        // be used when the unwind process finished
+        let asyncify_stop_unwind_func;
+
+        if let Some(asyncify_stop_unwind_extern) = caller.get_export(ASYNCIFY_STOP_UNWIND) {
+            match asyncify_stop_unwind_extern {
+                Extern::Func(asyncify_stop_unwind) => {
+                    match asyncify_stop_unwind.typed::<(), ()>(&caller) {
+                        Ok(func) => {
+                            asyncify_stop_unwind_func = func;
+                        }
+                        Err(err) => {
+                            println!("the signature of asyncify_stop_unwind function is not correct: {:?}", err);
+                            return Ok(-1);
+                        }
+                    }
+                },
+                _ => {
+                    println!("asyncify_stop_unwind export is not a function");
+                    return Ok(-1);
+                }
+            }
+        }
+        else {
+            println!("asyncify_stop_unwind export not found");
+            return Ok(-1);
+        }
+
+        let engine = self.module.engine().clone();
+
+        let store = &mut caller.store.0;
+
+        let cloned_run_command = self.run_command.clone();
+        let cloned_next_cageid = self.next_cageid.clone();
+        let cloned_lind_manager = self.lind_manager.clone();
+        let cloned_pid = self.pid;
+
+        store.set_on_called(Box::new(move |mut store| {
+            // unwind finished and we need to stop the unwind
+            let _res = asyncify_stop_unwind_func.call(&mut store, ());
+
+            // lind_exec(cloned_pid as u64, cloned_pid as u64);
+            let ret = exec(&cloned_run_command, path_str, &args, cloned_pid, &cloned_next_cageid, &cloned_lind_manager);
+
+            return Ok(OnCalledAction::Finish(ret.expect("exec-ed module error")));
         }));
 
         return Ok(0);
@@ -471,19 +661,21 @@ impl<T: Clone + Send + 'static + std::marker::Sync> WasiForkCtx<T> {
             pid: 0,
             // next_pid: self.next_pid.clone(),
             next_cageid: self.next_cageid.clone(),
-            lind_manager: self.lind_manager.clone()
+            lind_manager: self.lind_manager.clone(),
+            run_command: self.run_command.clone()
         };
 
         return forked_ctx;
     }
 }
 
-pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync>(
+pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>(
     linker: &mut wasmtime::Linker<T>,
-    get_cx: impl Fn(&T) -> &WasiForkCtx<T> + Send + Sync + Copy + 'static,
-    get_cx_mut: impl Fn(&mut T) -> &mut WasiForkCtx<T> + Send + Sync + Copy + 'static,
+    get_cx: impl Fn(&T) -> &WasiForkCtx<T, U> + Send + Sync + Copy + 'static,
+    get_cx_mut: impl Fn(&mut T) -> &mut WasiForkCtx<T, U> + Send + Sync + Copy + 'static,
     get_wasi_cx: impl Fn(&mut T) -> &mut WasiCtx + Send + Sync + Copy + 'static,
     fork_host: impl Fn(&T) -> T + Send + Sync + Copy + 'static,
+    exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>) -> Result<Vec<Val>> + Send + Sync + Copy + 'static,
 ) -> anyhow::Result<()> {
     linker.func_wrap(
         "wasix",
@@ -506,14 +698,35 @@ pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync>(
 
     linker.func_wrap(
         "wasix",
-        "lind-getpid",
-        move |mut caller: Caller<'_, T>, _: i32| -> i32 {
+        "lind-execv",
+        move |mut caller: Caller<'_, T>, path: i64, argv: i64| -> i32 {
             let host = caller.data().clone();
+            let wasictx = get_wasi_cx(caller.data_mut());
+            // println!("env: {:?}", wasictx.env);
             let ctx = get_cx(&host);
 
-            return ctx.getpid();
+            match ctx.execv_call(&mut caller, path, argv, exec)  {
+                Ok(ret) => {
+                    ret
+                }
+                Err(e) => {
+                    log::error!("failed to exec: {}", e);
+                    -1
+                }
+            }
         },
     )?;
+
+    // linker.func_wrap(
+    //     "wasix",
+    //     "lind-getpid",
+    //     move |mut caller: Caller<'_, T>, _: i32| -> i32 {
+    //         let host = caller.data().clone();
+    //         let ctx = get_cx(&host);
+
+    //         return ctx.getpid();
+    //     },
+    // )?;
 
     Ok(())
 }

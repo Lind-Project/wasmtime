@@ -1079,7 +1079,13 @@ impl Func {
                     Ok(OnCalledAction::InvokeAgain) => {
                         continue;
                     },
-                    Ok(OnCalledAction::Finish) => {
+                    Ok(OnCalledAction::Finish(ret)) => {
+                        // *ValRaw = ValRaw { i32: ret.get(0).unwrap().into() };
+                        let retval = ret.get(0).unwrap();
+                        if let Val::I32(res) = retval {
+                            *params_and_returns = ValRaw::i32(*res);
+                        }
+                        // println!("capacity: {}", params_and_returns_capacity);
                         break;
                     },
                     Ok(OnCalledAction::Trap(trap)) => {

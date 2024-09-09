@@ -233,7 +233,7 @@ where
                     Ok(OnCalledAction::InvokeAgain) => {
                         continue;
                     },
-                    Ok(OnCalledAction::Finish) => {
+                    Ok(OnCalledAction::Finish(ret)) => {
                         break;
                     },
                     Ok(OnCalledAction::Trap(trap)) => {

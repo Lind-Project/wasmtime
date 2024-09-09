@@ -33,7 +33,7 @@ use clap::Parser;
     // `RunCommand`.
     args_conflicts_with_subcommands = true
 )]
-struct Wasmtime {
+pub struct Wasmtime {
     #[cfg(not(feature = "run"))]
     #[command(subcommand)]
     subcommand: Subcommand,
