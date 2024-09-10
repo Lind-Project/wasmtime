@@ -1062,7 +1062,6 @@ impl Func {
         let mut result;
 
         loop {
-            // _println!("calling main");
             result = invoke_wasm_and_catch_traps(store, |caller| {
                 let func_ref = func_ref.as_ref();
                 (func_ref.array_call)(
@@ -1074,29 +1073,25 @@ impl Func {
             });
 
             if let Some(callback) = store.0.on_called.take() {
-                // _println!("calling callback");
                 match callback(store) {
                     Ok(OnCalledAction::InvokeAgain) => {
                         continue;
                     },
                     Ok(OnCalledAction::Finish(ret)) => {
-                        // *ValRaw = ValRaw { i32: ret.get(0).unwrap().into() };
                         let retval = ret.get(0).unwrap();
                         if let Val::I32(res) = retval {
                             *params_and_returns = ValRaw::i32(*res);
                         }
-                        // println!("capacity: {}", params_and_returns_capacity);
                         break;
                     },
                     Ok(OnCalledAction::Trap(trap)) => {
-                        println!("encounter a trap!");
+                        println!("encounter a trap: {:?}", trap);
                     },
                     Err(err) => {
-                        println!("encounter a error!");
+                        println!("encounter a error: {:?}", err);
                     }
                 }
             }
-            // _println!("no callback found");
             break;
         }
 
@@ -1624,7 +1619,6 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
             store.0.default_caller(),
             closure,
         );
-        // _println!("wasm exit");
         
         exit_wasm(store, exit);
         store.0.call_hook(CallHook::ReturningFromWasm)?;
@@ -1658,7 +1652,6 @@ fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
     if unsafe { *store.0.runtime_limits().stack_limit.get() } != usize::MAX
         && !store.0.async_support()
     {
-        // _println!("enter wasm None");
         return None;
     }
 
@@ -1668,16 +1661,8 @@ fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
     if cfg!(miri) {
         return None;
     }
-
-    // unsafe {
-    //     let sp = *store.0.runtime_limits().last_wasm_entry_sp.get();
-    //     if sp != 0 {
-    //         crate::runtime::vm::set_stack_pointer(*store.0.runtime_limits().last_wasm_entry_sp.get());
-    //     }
-    // };
     
     let stack_pointer = crate::runtime::vm::get_stack_pointer();
-    // println!("stack_pointer: {:?}", stack_pointer);
 
     // Determine the stack pointer where, after which, any wasm code will
     // immediately trap. This is checked on the entry to all wasm functions.
@@ -1700,9 +1685,6 @@ fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
             wasm_stack_limit,
         )
     };
-
-    // println!("wasm_stack_limit: {:?}", wasm_stack_limit);
-    // println!("prev_stack: {:?}", prev_stack);
 
     Some(prev_stack)
 }
@@ -2056,7 +2038,7 @@ for_each_function_signature!(impl_wasm_ty_list);
 /// Host functions which want access to [`Store`](crate::Store)-level state are
 /// recommended to use this type.
 pub struct Caller<'a, T> {
-    pub store: StoreContextMut<'a, T>,
+    pub(crate) store: StoreContextMut<'a, T>,
     caller: &'a crate::runtime::vm::Instance,
 }
 

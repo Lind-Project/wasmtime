@@ -21,6 +21,7 @@ pub enum OnCalledAction {
     Trap(Box<dyn std::error::Error + Send + Sync>),
 }
 
+#[derive(Copy, Clone)]
 pub struct RewindingReturn {
     pub rewinding: bool,
     pub retval: i32

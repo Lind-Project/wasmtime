@@ -225,26 +225,22 @@ where
                 );
             });
 
-            // _println!("invoke_wasm_and_catch_traps done");
-
             if let Some(callback) = store.0.on_called.take() {
-                // _println!("calling callback");
                 match callback(store) {
                     Ok(OnCalledAction::InvokeAgain) => {
                         continue;
                     },
-                    Ok(OnCalledAction::Finish(ret)) => {
+                    Ok(OnCalledAction::Finish(_ret)) => {
                         break;
                     },
                     Ok(OnCalledAction::Trap(trap)) => {
-                        println!("encounter a trap!");
+                        println!("encounter a trap: {:?}", trap);
                     },
                     Err(err) => {
-                        println!("encounter a error!");
+                        println!("encounter a error: {:?}", err);
                     }
                 }
             }
-            // _println!("no callback found");
             break;
         }
 

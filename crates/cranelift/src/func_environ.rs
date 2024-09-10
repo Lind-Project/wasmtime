@@ -1111,7 +1111,6 @@ impl<'a, 'func, 'module_env> Call<'a, 'func, 'module_env> {
         callee: ir::FuncRef,
         call_args: &[ir::Value],
     ) -> WasmResult<ir::Inst> {
-        // println!("direct call");
         let mut real_call_args = Vec::with_capacity(call_args.len() + 2);
         let caller_vmctx = self
             .builder

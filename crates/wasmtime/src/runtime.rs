@@ -13,7 +13,7 @@ pub(crate) mod linker;
 pub(crate) mod memory;
 pub(crate) mod module;
 pub(crate) mod resources;
-pub mod store;
+pub(crate) mod store;
 pub(crate) mod trampoline;
 pub(crate) mod trap;
 pub(crate) mod type_registry;
@@ -21,7 +21,7 @@ pub(crate) mod types;
 pub(crate) mod uninhabited;
 pub(crate) mod v128;
 pub(crate) mod values;
-pub mod vm;
+pub(crate) mod vm;
 
 #[cfg(feature = "component-model")]
 pub mod component;
@@ -52,7 +52,7 @@ pub use resources::*;
 #[cfg(all(feature = "async", feature = "call-hook"))]
 pub use store::CallHookHandler;
 pub use store::{
-    AsContext, AsContextMut, CallHook, Store, StoreContext, StoreContextMut, UpdateDeadline,
+    AsContext, AsContextMut, CallHook, Store, StoreContext, StoreContextMut, UpdateDeadline, StoreOpaque, InstanceId
 };
 pub use trap::*;
 pub use types::*;

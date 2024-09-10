@@ -108,7 +108,7 @@ impl<T> Clone for Linker<T> {
     }
 }
 
-#[derive(Copy, Clone, Hash, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, Hash, PartialEq, Eq)]
 struct ImportKey {
     name: usize,
     module: usize,

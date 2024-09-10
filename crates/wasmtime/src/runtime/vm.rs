@@ -31,7 +31,7 @@ mod store_box;
 mod sys;
 mod table;
 mod traphandlers;
-pub mod vmcontext;
+mod vmcontext;
 
 mod threads;
 pub use self::threads::*;

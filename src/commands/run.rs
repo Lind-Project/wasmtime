@@ -13,7 +13,7 @@ use wasmtime_lind_fork::WasiForkCtx;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use wasi_common::sync::{ambient_authority, Dir, TcpListener, WasiCtxBuilder};
 use wasmtime::{Engine, Func, Module, Store, StoreLimits, Val, ValType};
@@ -129,7 +129,7 @@ impl RunCommand {
 
         let host = Host::default();
         let mut store = Store::new(&engine, host);
-        let mut lind_manager = Arc::new(LindCageManager::new(0));
+        let lind_manager = Arc::new(LindCageManager::new(0));
         self.populate_with_wasi(&mut linker, &mut store, &main, lind_manager.clone(), None, None)?;
 
         store.data_mut().limits = self.run.store_limits();
@@ -249,8 +249,6 @@ impl RunCommand {
     }
 
     fn execute_with_lind(mut self, lind_manager: Arc<LindCageManager>, pid: i32, next_cageid: Arc<AtomicU64>) -> Result<Vec<Val>> {
-        // self.run.common.init_logging()?;
-
         let mut config = self.run.common.config(None, None)?;
 
         if self.run.common.wasm.timeout.is_some() {
@@ -836,32 +834,16 @@ impl RunCommand {
         }
 
         {
-            // fn get_cx<'a, T>(host: &'a Host) -> &'a mut WasiForkCtx<Host> {
-            //     host.lind_fork_ctx.as_deref_mut().unwrap()
-            // }
-            
             let linker = match linker {
                 CliLinker::Core(linker) => linker,
                 _ => bail!("lind-fork does not support components yet"),
             };
             let module = module.unwrap_core();
 
-            // let exec_closure = {
-            //     let run_command = self.clone();
-            //     move |engine, path, pid, next_cageid, lind_manager| {
-            //         let mut new_run_command = run_command.clone();
-            //         new_run_command.module_and_args = vec![OsString::from(path)];
-            //         new_run_command.execute_with_lind(lind_manager, pid, next_cageid);
-            //         Ok(())
-            //     }
-            // };
-
             wasmtime_lind_fork::add_to_linker::<Host, RunCommand>(linker, |host| {
                 host.lind_fork_ctx.as_ref().unwrap()
             },|host| {
                 host.lind_fork_ctx.as_mut().unwrap()
-                // host.lind_fork_ctx.as_deref_mut().unwrap()
-                // get_cx(&host)
             }
             , |host| {
                 host.preview1_ctx.as_mut().unwrap()
@@ -990,7 +972,7 @@ impl RunCommand {
 
 #[allow(missing_docs)]
 #[derive(Default, Clone)]
-pub struct Host {
+struct Host {
     preview1_ctx: Option<wasi_common::WasiCtx>,
 
     // The Mutex is only needed to satisfy the Sync constraint but we never

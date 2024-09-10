@@ -218,14 +218,14 @@ impl CallHook {
 /// should go into `StoreOpaque`.
 pub struct StoreInner<T> {
     /// Generic metadata about the store that doesn't need access to `T`.
-    pub inner: StoreOpaque,
+    inner: StoreOpaque,
 
     limiter: Option<ResourceLimiterInner<T>>,
     call_hook: Option<CallHookInner<T>>,
     epoch_deadline_behavior:
         Option<Box<dyn FnMut(StoreContextMut<T>) -> Result<UpdateDeadline> + Send + Sync>>,
 
-    pub on_called: Option<OnCalledHandler<T>>,
+    pub(crate) on_called: Option<OnCalledHandler<T>>,
     is_thread: bool,
     
     // for comments about `ManuallyDrop`, see `Store::into_data`
@@ -321,7 +321,7 @@ pub struct StoreOpaque {
 
     engine: Engine,
     runtime_limits: VMRuntimeLimits,
-    pub instances: Vec<StoreInstance>,
+    instances: Vec<StoreInstance>,
     #[cfg(feature = "component-model")]
     num_component_instances: usize,
     signal_handler: Option<Box<SignalHandler<'static>>>,
@@ -329,7 +329,7 @@ pub struct StoreOpaque {
     func_refs: FuncRefs,
     host_globals: Vec<StoreBox<VMHostGlobalContext>>,
 
-    pub rewinding: RewindingReturn,
+    rewinding: RewindingReturn,
 
     // GC-related fields.
     gc_store: Option<GcStore>,
@@ -486,8 +486,8 @@ impl Drop for AutoAssertNoGc<'_> {
 ///
 /// This is needed to track if the instance was allocated explicitly with the on-demand
 /// instance allocator.
-pub struct StoreInstance {
-    pub handle: InstanceHandle,
+struct StoreInstance {
+    handle: InstanceHandle,
     kind: StoreInstanceKind,
 }
 
@@ -1213,6 +1213,11 @@ impl<'a, T> StoreContext<'a, T> {
     pub fn get_fuel(&self) -> Result<u64> {
         self.0.get_fuel()
     }
+
+    /// get current rewinding state
+    pub fn get_rewinding_state(&self) -> RewindingReturn {
+        self.0.rewinding
+    }
 }
 
 impl<'a, T> StoreContextMut<'a, T> {
@@ -1291,6 +1296,16 @@ impl<'a, T> StoreContextMut<'a, T> {
     /// For more information see [`Store::epoch_deadline_trap`].
     pub fn epoch_deadline_trap(&mut self) {
         self.0.epoch_deadline_trap();
+    }
+
+    /// get current rewinding state
+    pub fn get_rewinding_state(&self) -> RewindingReturn {
+        self.0.rewinding
+    }
+
+    /// set current rewinding state
+    pub fn set_rewinding_state(&mut self, state: RewindingReturn) {
+        self.0.rewinding = state;
     }
 
     /// Configures epoch-deadline expiration to yield to the async
@@ -2805,7 +2820,6 @@ impl<T> StoreInner<T> {
 
     pub fn set_on_called(&mut self, callback: Box<dyn FnOnce(&mut StoreContextMut<'_, T>) -> Result<OnCalledAction, Box<dyn std::error::Error + Send + Sync>> + Send + Sync>)
     {
-        // _println!("callback set");
         self.on_called = Some(callback);
     }
 

@@ -141,8 +141,8 @@ impl WasiCtx {
             env: self.env.clone(),
             random: Mutex::new(random_ctx()),
             clocks: clocks_ctx(),
-            sched: sched_ctx(), // not sure about this one
-            table: Table::new(), // to-do: this is obviously not correct
+            sched: sched_ctx(), // to-do: not sure about this one
+            table: Table::new(), // to-do: we should really fork the table instead of creating a new one
             lind_cageid: RwLock::new(self.get_lind_cageid()),
         };
         
@@ -158,10 +158,3 @@ impl Deref for WasiCtx {
         &self.0
     }
 }
-
-// impl DerefMut for WasiCtx {
-//     type Target = WasiCtxInner;
-//     fn deref(&mut self) -> &mut Self::Target {
-//         &mut self.0
-//     }
-// }

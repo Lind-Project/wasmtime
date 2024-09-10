@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 extern crate libc;
 pub mod librustposix {
     use libc::{

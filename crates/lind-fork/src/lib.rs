@@ -1,17 +1,14 @@
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
-use rustposix::{lind_exec, lind_exit, lind_fork, LindCageManager};
+use rustposix::{lind_exit, lind_fork, LindCageManager};
 use wasi_common::WasiCtx;
-use wasmtime::store::StoreOpaque;
 use std::ffi::CStr;
 use std::os::raw::c_char;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Barrier};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier};
 use std::thread;
-use wasmtime::{AsContext, AsContextMut, Caller, Engine, ExternType, Linker, Module, SharedMemory, Store, Val};
-
-use wasmtime::runtime::Extern;
-use wasmtime::runtime::OnCalledAction;
-use wasmtime::runtime::RewindingReturn;
+use wasmtime::{AsContext, AsContextMut, Caller, ExternType, Linker, Module, SharedMemory, Store, Val, Extern, OnCalledAction, RewindingReturn, StoreOpaque, InstanceId};
 
 use wasmtime_environ::MemoryIndex;
 
@@ -73,7 +70,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         // if fork is called during the rewinding process
         // that would mean fork has completed and we want to stop the rewind
         // and return the fork result
-        if caller.store.0.inner.rewinding.rewinding {
+        if caller.as_context().get_rewinding_state().rewinding {
             if let Some(asyncify_stop_rewind_extern) = caller.get_export(ASYNCIFY_STOP_REWIND) {
                 match asyncify_stop_rewind_extern {
                     Extern::Func(asyncify_stop_rewind) => {
@@ -98,26 +95,20 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 return Ok(-1);
             }
 
-            let retval = caller.store.0.inner.rewinding.retval;
+            let retval = caller.as_context().get_rewinding_state().retval;
 
-            caller.store.0.inner.rewinding = RewindingReturn {
+            caller.as_context_mut().set_rewinding_state(RewindingReturn {
                 rewinding: false,
                 retval: 0,
-            };
+            });
 
             return Ok(retval);
         }
 
         // get the base address of the memory
-        let address;
-        if let Some(instance_item) = caller.as_context().0.instances.get(0) {
-            let vm_instance = instance_item.handle.instance();
-            let defined_memory = vm_instance.get_memory(MemoryIndex::from_u32(0));
-            address = defined_memory.base;
-        } else {
-            println!("no memory found");
-            return Ok(-1);
-        }
+        let handle = caller.as_context().0.instance(InstanceId::from_index(0));
+        let defined_memory = handle.get_memory(MemoryIndex::from_u32(0));
+        let address = defined_memory.base;
 
         // get the stack pointer global
         let stack_pointer;
@@ -263,7 +254,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         let engine = self.module.engine().clone();
 
         // set up unwind callback function
-        let store = &mut caller.store.0;
+        let store = caller.as_context_mut().0;
         let is_parent_thread = store.is_thread();
         store.set_on_called(Box::new(move |mut store| {
             // let unwind_stack_finish;
@@ -303,7 +294,6 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 let store_inner = Store::<T>::new_inner(&engine);
 
                 let child_ctx = get_cx(&mut child_host);
-                let child_pid = child_cageid as i32;
                 child_ctx.pid = child_cageid as i32;
 
                 child_ctx.fork_memory(&store_inner);
@@ -322,18 +312,15 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
 
                 // copy the entire memory from parent, note that the unwind data is also copied together
                 // with the memory
-                let mut child_address = 0 as *mut u8;
-                let mut address_length: usize = 0;
+                let child_address: *mut u8;
+                let address_length: usize;
 
-                for instance_item in &mut store.inner_mut().instances {
-                    let vm_instance = instance_item.handle.instance_mut();
-
-                    // from my current understanding, there should be only exactly one memory in case of lind-wasm, its
-                    // either imported_memory in case of threading, or defined_memory if threading is not enabled
-                    let defined_memory = vm_instance.get_memory(MemoryIndex::from_u32(0));
+                // get the base address of the memory
+                {
+                    let handle = store.inner_mut().instance(InstanceId::from_index(0));
+                    let defined_memory = handle.get_memory(MemoryIndex::from_u32(0));
                     child_address = defined_memory.base;
                     address_length = defined_memory.current_length.load(Ordering::SeqCst);
-                    break;
                 }
 
                 if child_address == 0 as *mut u8 {
@@ -368,10 +355,10 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 let _ = child_rewind_start.call(&mut store, rewind_pointer as i32);
 
                 // set up rewind state and fork return value for child
-                store.as_context_mut().0.rewinding = RewindingReturn {
+                store.as_context_mut().set_rewinding_state(RewindingReturn {
                     rewinding: true,
                     retval: 0,
-                };
+                });
 
                 if store.is_thread() {
                     // fork inside a thread is possible but not common
@@ -417,10 +404,10 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             let _ = asyncify_start_rewind_func.call(&mut store, rewind_pointer as i32);
 
             // set up rewind state and fork return value for parent
-            store.0.inner.rewinding = RewindingReturn {
+            store.set_rewinding_state(RewindingReturn {
                 rewinding: true,
                 retval: child_cageid as i32,
-            };
+            });
 
             // return InvokeAgain here would make parent re-invoke main
             return Ok(OnCalledAction::InvokeAgain);
@@ -435,15 +422,9 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                              exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>) -> Result<Vec<Val>> + Send + Sync + Copy + 'static,
                      ) -> Result<i32> {
         // get the base address of the memory
-        let address;
-        if let Some(instance_item) = caller.as_context().0.instances.get(0) {
-            let vm_instance = instance_item.handle.instance();
-            let defined_memory = vm_instance.get_memory(MemoryIndex::from_u32(0));
-            address = defined_memory.base;
-        } else {
-            println!("no memory found");
-            return Ok(-1);
-        }
+        let handle = caller.as_context().0.instance(InstanceId::from_index(0));
+        let defined_memory = handle.get_memory(MemoryIndex::from_u32(0));
+        let address = defined_memory.base;
 
         let path_ptr = ((address as i64) + path) as *const u8;
         let path_str;
@@ -478,7 +459,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 let arg_ptr = ((address as i64) + (c_str as i64)) as *const c_char;
 
                 // Convert it to a Rust String
-                let arg = unsafe { CStr::from_ptr(arg_ptr) }
+                let arg = CStr::from_ptr(arg_ptr)
                     .to_string_lossy()
                     .into_owned();
                 args.push(arg);
@@ -581,9 +562,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             return Ok(-1);
         }
 
-        let engine = self.module.engine().clone();
-
-        let store = &mut caller.store.0;
+        let store = caller.as_context_mut().0;
 
         let cloned_run_command = self.run_command.clone();
         let cloned_next_cageid = self.next_cageid.clone();
@@ -606,18 +585,6 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
     pub fn getpid(&self) -> i32 {
         self.pid
     }
-
-    // fn next_process_id(&self) -> Option<i32> {
-    //     match self
-    //         .next_pid
-    //         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| match v {
-    //             ..=0x1ffffffe => Some(v + 1),
-    //             _ => None,
-    //         }) {
-    //         Ok(v) => Some(v + 1),
-    //         Err(_) => None,
-    //     }
-    // }
 
     fn next_cage_id(&self) -> Option<u64> {
         match self
@@ -701,8 +668,6 @@ pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync, U: Clone + S
         "lind-execv",
         move |mut caller: Caller<'_, T>, path: i64, argv: i64| -> i32 {
             let host = caller.data().clone();
-            let wasictx = get_wasi_cx(caller.data_mut());
-            // println!("env: {:?}", wasictx.env);
             let ctx = get_cx(&host);
 
             match ctx.execv_call(&mut caller, path, argv, exec)  {
@@ -716,17 +681,6 @@ pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync, U: Clone + S
             }
         },
     )?;
-
-    // linker.func_wrap(
-    //     "wasix",
-    //     "lind-getpid",
-    //     move |mut caller: Caller<'_, T>, _: i32| -> i32 {
-    //         let host = caller.data().clone();
-    //         let ctx = get_cx(&host);
-
-    //         return ctx.getpid();
-    //     },
-    // )?;
 
     Ok(())
 }

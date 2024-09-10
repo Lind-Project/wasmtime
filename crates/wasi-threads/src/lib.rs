@@ -62,7 +62,6 @@ impl<T: Clone + Send + 'static> WasiThreadsCtx<T> {
                 // Each new instance is created in its own store.
                 let mut store = Store::new(&instance_pre.module().engine(), host);
                 store.set_is_thread(true);
-                // println!("-----------------thread memory------------------");
                 let instance = instance_pre.instantiate(&mut store).unwrap();
                 let thread_entry_point = instance
                     .get_typed_func::<(i32, i32), ()>(&mut store, WASI_ENTRY_POINT)
@@ -80,17 +79,9 @@ impl<T: Clone + Send + 'static> WasiThreadsCtx<T> {
                     thread_start_arg
                 );
 
-                // println!(
-                //     "spawned thread id = {}; calling start function `{}` with: {}",
-                //     wasi_thread_id,
-                //     WASI_ENTRY_POINT,
-                //     thread_start_arg
-                // );
-
                 match thread_entry_point.call(&mut store, (wasi_thread_id, thread_start_arg)) {
                     Ok(_) => { 
                         log::trace!("exiting thread id = {} normally", wasi_thread_id);
-                        // println!("exiting thread id = {} normally", wasi_thread_id);
                     }
                     Err(e) => {
                         log::trace!("exiting thread id = {} due to error", wasi_thread_id);
@@ -99,7 +90,6 @@ impl<T: Clone + Send + 'static> WasiThreadsCtx<T> {
                         std::process::exit(1);
                     }
                 }
-                // println!("wasi-thread-spawn done");
             }));
 
             if let Err(e) = result {
@@ -134,7 +124,7 @@ impl<T: Clone + Send + 'static> WasiThreadsCtx<T> {
 /// It is unclear what namespace the `wasi-threads` proposal should live under:
 /// it is not clear if it should be included in any of the `preview*` releases
 /// so for the time being its module namespace is simply `"wasi"` (TODO).
-pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync>(
+pub fn add_to_linker<T: Clone + Send + 'static>(
     linker: &mut wasmtime::Linker<T>,
     store: &wasmtime::Store<T>,
     module: &Module,
@@ -144,7 +134,6 @@ pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync>(
         "wasi",
         "thread-spawn",
         move |mut caller: Caller<'_, T>, start_arg: i32| -> i32 {
-            // println!("---------------------thread-spawn---------------------");
             log::trace!("new thread requested via `wasi::thread_spawn` call");
             let host = caller.data().clone();
             let ctx = get_cx(caller.data_mut());
@@ -163,14 +152,9 @@ pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync>(
 
     // Find the shared memory import and satisfy it with a newly-created shared
     // memory import.
-    // println!("wasi-thread iterate import");
     for import in module.imports() {
-        // println!("an import here");
-        // println!("ty: {:?}", import.ty());
         if let Some(m) = import.ty().memory() {
-            // println!("has memory");
             if m.is_shared() {
-                // println!("wasi-thread share memory");
                 let mem = SharedMemory::new(module.engine(), m.clone())?;
                 linker.define(store, import.module(), import.name(), mem.clone())?;
             } else {

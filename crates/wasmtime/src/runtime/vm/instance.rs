@@ -14,7 +14,7 @@ use crate::runtime::vm::vmcontext::{
 };
 use crate::runtime::vm::{
     ExportFunction, ExportGlobal, ExportMemory, ExportTable, GcStore, Imports, ModuleRuntimeInfo,
-    SendSyncPtr, Store, VMFunctionBody, VMGcRef, WasmFault, ExportGlobalImmut
+    SendSyncPtr, Store, VMFunctionBody, VMGcRef, WasmFault
 };
 use alloc::sync::Arc;
 use core::alloc::Layout;
@@ -60,7 +60,7 @@ pub struct Instance {
     /// lazy initialization. This provides access to the underlying
     /// Wasm module entities, the compiled JIT code, metadata about
     /// functions, lazy initialization state, etc.
-    pub runtime_info: ModuleRuntimeInfo,
+    runtime_info: ModuleRuntimeInfo,
 
     /// WebAssembly linear memory data.
     ///
@@ -70,7 +70,7 @@ pub struct Instance {
     /// The `MemoryAllocationIndex` was given from our `InstanceAllocator` and
     /// must be given back to the instance allocator when deallocating each
     /// memory.
-    pub memories: PrimaryMap<DefinedMemoryIndex, (MemoryAllocationIndex, Memory)>,
+    memories: PrimaryMap<DefinedMemoryIndex, (MemoryAllocationIndex, Memory)>,
 
     /// WebAssembly table data.
     ///
@@ -80,7 +80,7 @@ pub struct Instance {
     /// The `TableAllocationIndex` was given from our `InstanceAllocator` and
     /// must be given back to the instance allocator when deallocating each
     /// table.
-    pub tables: PrimaryMap<DefinedTableIndex, (TableAllocationIndex, Table)>,
+    tables: PrimaryMap<DefinedTableIndex, (TableAllocationIndex, Table)>,
 
     /// Stores the dropped passive element segments in this instantiation by index.
     /// If the index is present in the set, the segment has been dropped.
@@ -270,7 +270,7 @@ impl Instance {
     }
 
     #[inline]
-    pub fn offsets(&self) -> &VMOffsets<HostPtr> {
+    fn offsets(&self) -> &VMOffsets<HostPtr> {
         self.runtime_info.offsets()
     }
 
@@ -285,8 +285,7 @@ impl Instance {
     }
 
     /// Return the indexed `VMMemoryImport`.
-    pub fn imported_memory(&self, index: MemoryIndex) -> &VMMemoryImport {
-        // println!("self.offsets: {:?}", self.offsets());
+    fn imported_memory(&self, index: MemoryIndex) -> &VMMemoryImport {
         unsafe { &*self.vmctx_plus_offset(self.offsets().vmctx_vmmemory_import(index)) }
     }
 
@@ -314,7 +313,7 @@ impl Instance {
     }
 
     /// Get a locally defined or imported memory.
-    pub fn get_memory(&self, index: MemoryIndex) -> VMMemoryDefinition {
+    pub(crate) fn get_memory(&self, index: MemoryIndex) -> VMMemoryDefinition {
         if let Some(defined_index) = self.module().defined_memory_index(index) {
             self.memory(defined_index)
         } else {
@@ -358,11 +357,6 @@ impl Instance {
     /// Return the indexed `VMGlobalDefinition`.
     fn global_ptr(&mut self, index: DefinedGlobalIndex) -> *mut VMGlobalDefinition {
         unsafe { self.vmctx_plus_offset_mut(self.offsets().vmctx_vmglobal_definition(index)) }
-    }
-
-    /// Return the indexed `VMGlobalDefinition`.
-    fn global_ptr_immut(&self, index: DefinedGlobalIndex) -> *const VMGlobalDefinition {
-        unsafe { self.vmctx_plus_offset(self.offsets().vmctx_vmglobal_definition(index)) }
     }
 
     /// Get a raw pointer to the global at the given index regardless whether it
@@ -416,26 +410,6 @@ impl Instance {
                 let def_idx = module.defined_global_index(global_idx).unwrap();
                 let global = ExportGlobal {
                     definition: self.global_ptr(def_idx),
-                    vmctx: self.vmctx(),
-                    global: self.module().globals[global_idx],
-                };
-                (def_idx, global)
-            })
-    }
-
-    /// Get the globals defined in this instance (not imported).
-    pub fn defined_globals_immut<'a>(
-        &'a self,
-    ) -> impl ExactSizeIterator<Item = (DefinedGlobalIndex, ExportGlobalImmut)> + 'a {
-        let module = self.module().clone();
-        module
-            .globals
-            .keys()
-            .skip(module.num_imported_globals)
-            .map(move |global_idx| {
-                let def_idx = module.defined_global_index(global_idx).unwrap();
-                let global = ExportGlobalImmut {
-                    definition: self.global_ptr_immut(def_idx),
                     vmctx: self.vmctx(),
                     global: self.module().globals[global_idx],
                 };
@@ -1374,6 +1348,10 @@ impl InstanceHandle {
         self.instance_mut().get_exported_table(export)
     }
 
+    pub fn get_memory(&self, index: MemoryIndex) -> VMMemoryDefinition {
+        self.instance().get_memory(index)
+    }
+
     /// Lookup an item with the given index.
     pub fn get_export_by_index(&mut self, export: EntityIndex) -> Export {
         match export {
@@ -1486,11 +1464,11 @@ impl InstanceHandle {
 
     /// Return a reference to the contained `Instance`.
     #[inline]
-    pub fn instance(&self) -> &Instance {
+    pub(crate) fn instance(&self) -> &Instance {
         unsafe { &*self.instance.unwrap().as_ptr() }
     }
 
-    pub fn instance_mut(&mut self) -> &mut Instance {
+    pub(crate) fn instance_mut(&mut self) -> &mut Instance {
         unsafe { &mut *self.instance.unwrap().as_ptr() }
     }
 
