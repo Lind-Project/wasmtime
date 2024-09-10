@@ -1638,7 +1638,6 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
 /// This function may fail if the stack limit can't be set because an
 /// interrupt already happened.
 fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
-    // _println!("enter wasm");
     // If this is a recursive call, e.g. our stack limit is already set, then
     // we may be able to skip this function.
     //
@@ -1661,7 +1660,7 @@ fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Option<usize> {
     if cfg!(miri) {
         return None;
     }
-    
+
     let stack_pointer = crate::runtime::vm::get_stack_pointer();
 
     // Determine the stack pointer where, after which, any wasm code will

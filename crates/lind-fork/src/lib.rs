@@ -19,23 +19,21 @@ const ASYNCIFY_STOP_REWIND: &str = "asyncify_stop_rewind";
 
 #[derive(Clone)]
 pub struct WasiForkCtx<T, U> {
-    // instance_pre seems to be a static data and won't be modified anymore once created
-    // so we may not need to make a deep clone of it
-    // instance_pre: Arc<InstancePre<T>>,
+    // linker used by the module
     linker: Linker<T>,
+    // the module associated with the ctx
     module: Module,
 
-    // cageid is stored at preview1_ctx, so we do not need a duplicated field here
-    // cageid: u64,
-
-    // current pid associated with this ctx
+    // process id, should be same as cage id
     pid: i32,
-    // next_pid and next_cageid should be shared between processes
-    // next_pid: Arc<AtomicI32>,
+    
+    // next cage id
     next_cageid: Arc<AtomicU64>,
 
+    // used to keep track of how many active cages are running
     lind_manager: Arc<LindCageManager>,
 
+    // from run.rs, used for exec call
     run_command: U
 }
 
@@ -43,13 +41,14 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
     pub fn new(module: Module, linker: Linker<T>, lind_manager: Arc<LindCageManager>, run_command: U) -> Result<Self> {
         // this method should only be called once from run.rs, other instances of WasiForkCtx
         // are supposed to be created from fork() method
-        // let instance_pre = Arc::new(linker.instantiate_pre(&module)?);
+        
+        // cage id starts from 1
         let pid = 1;
-        // let next_pid = Arc::new(AtomicI32::new(0));
         let next_cageid = Arc::new(AtomicU64::new(1)); // cageid starts from 1
         Ok(Self { linker, module: module.clone(), pid, next_cageid, lind_manager: lind_manager.clone(), run_command })
     }
 
+    // used by exec call
     pub fn new_with_pid(module: Module, linker: Linker<T>, lind_manager: Arc<LindCageManager>, run_command: U, pid: i32, next_cageid: Arc<AtomicU64>) -> Result<Self> {
         Ok(Self { linker, module: module.clone(), pid, next_cageid, lind_manager: lind_manager.clone(), run_command })
     }
@@ -71,6 +70,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         // that would mean fork has completed and we want to stop the rewind
         // and return the fork result
         if caller.as_context().get_rewinding_state().rewinding {
+            // stop the rewind
             if let Some(asyncify_stop_rewind_extern) = caller.get_export(ASYNCIFY_STOP_REWIND) {
                 match asyncify_stop_rewind_extern {
                     Extern::Func(asyncify_stop_rewind) => {
@@ -95,8 +95,10 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 return Ok(-1);
             }
 
+            // retrieve the fork return value
             let retval = caller.as_context().get_rewinding_state().retval;
 
+            // set rewinding state to false
             caller.as_context_mut().set_rewinding_state(RewindingReturn {
                 rewinding: false,
                 retval: 0,
@@ -149,11 +151,13 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                             let unwind_data_start: u64 = unwind_pointer + 8;
                             let unwind_data_end: u64 = stack_pointer as u64;
     
+                            // store the parameter at the top of the stack
                             unsafe {
                                 *(address as *mut u64) = unwind_data_start;
                                 *(address as *mut u64).add(1) = unwind_data_end;
                             }
-    
+                            
+                            // mark the start of unwind
                             let _res = func.call(&mut caller, unwind_pointer as i32);
                         }
                         Err(err) => {
@@ -226,31 +230,24 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             return Ok(-1);
         }
 
+        // we want to send this address to child thread
         let cloned_address = address as u64;
 
-        // ready for creating the child instance
-        // let instance_pre = Arc::new(self.linker.instantiate_pre(&self.module)?);
-        // let instance_pre = self.instance_pre.clone();
-
-        // let module = instance_pre.module();
-        // let offsets = module.offsets();
-        // let vm_offset = offsets.vmctx_imported_memories_begin();
-        // println!("vmoffsets: {:?}", offsets);
-
+        // retrieve the child host
         let mut child_host = fork_host(caller.data());
+        // get next cage id
         let child_cageid = self.next_cage_id();
         if let None = child_cageid {
             println!("running out of cageid!");
-            // return Ok(-1);
         }
         let child_cageid = child_cageid.unwrap();
 
         // set up child wasi_ctx cage id
         let child_wasi_ctx = get_wasi_cx(&mut child_host);
         let parent_cageid = child_wasi_ctx.get_lind_cageid();
-        // let child_cageid = parent_cageid + 1;
         child_wasi_ctx.set_lind_cageid(child_cageid);
 
+        // use the same engine for parent and child
         let engine = self.module.engine().clone();
 
         // set up unwind callback function
@@ -286,19 +283,16 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
 
             let builder = thread::Builder::new().name(format!("lind-fork-{}", child_cageid));
             builder.spawn(move || {
-                // let mut child_host = caller.data().clone();
-                // let mut child_ctx = get_cx(&child_host);
-
                 // create a new instance
-                // let mut store = Store::new(&engine, child_host);
                 let store_inner = Store::<T>::new_inner(&engine);
 
+                // get child context
                 let child_ctx = get_cx(&mut child_host);
                 child_ctx.pid = child_cageid as i32;
 
+                // create a new memory area for child
                 child_ctx.fork_memory(&store_inner);
                 let instance_pre = Arc::new(child_ctx.linker.instantiate_pre(&child_ctx.module).unwrap());
-                // println!("instantiate");
 
                 let lind_manager = child_ctx.lind_manager.clone();
                 let mut store = Store::new_with_inner(&engine, child_host, store_inner);
@@ -308,6 +302,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                     store.set_is_thread(true);
                 }
 
+                // instantiate the module
                 let instance = instance_pre.instantiate(&mut store).unwrap();
 
                 // copy the entire memory from parent, note that the unwind data is also copied together
@@ -323,13 +318,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                     address_length = defined_memory.current_length.load(Ordering::SeqCst);
                 }
 
-                if child_address == 0 as *mut u8 {
-                    println!("no memory found for child");
-                    return -1;
-                }
-
-                // println!("cloned_address: {:?}, child_address: {:?}", cloned_address as *mut u8, child_address);
-
+                // copy the entire memory area from parent to child
                 unsafe { std::ptr::copy_nonoverlapping(cloned_address as *mut u8, child_address, address_length); }
 
                 // new cage created, increment the cage counter
@@ -351,7 +340,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                     }
                 };
 
-                // rewind the child
+                // mark the child to rewind state
                 let _ = child_rewind_start.call(&mut store, rewind_pointer as i32);
 
                 // set up rewind state and fork return value for child
@@ -369,6 +358,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                     // however, since this is not a common practice, so we do not support this right now
                     return -1;
                 } else {
+                    // main thread calls fork, then we calls from _start function
                     let child_start_func = instance
                         .get_func(&mut store, "_start")
                         .ok_or_else(|| anyhow!("no func export named `_start` found")).unwrap();
@@ -381,10 +371,11 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                     let _invoke_res = child_start_func
                         .call(&mut store, &values, &mut results);
 
+                    // get the exit code of the module
                     let exit_code = results.get(0).expect("_start function does not have a return value");
                     match exit_code {
                         Val::I32(val) => {
-                            // exit the cage
+                            // exit the cage with the exit code
                             lind_exit(child_cageid, *val);
                         },
                         _ => {
@@ -401,6 +392,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
 
             barrier.wait();
 
+            // mark the parent to rewind state
             let _ = asyncify_start_rewind_func.call(&mut store, rewind_pointer as i32);
 
             // set up rewind state and fork return value for parent
@@ -413,6 +405,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             return Ok(OnCalledAction::InvokeAgain);
         }));
 
+        // after returning from here, unwind process should start
         return Ok(0);
     }
 
@@ -426,6 +419,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         let defined_memory = handle.get_memory(MemoryIndex::from_u32(0));
         let address = defined_memory.base;
 
+        // parse the path and argv
         let path_ptr = ((address as i64) + path) as *const u8;
         let path_str;
 
@@ -466,9 +460,6 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
 
                 i += 1;  // Move to the next argument
             }
-    
-            // println!("path: {}", path_str);
-            // println!("args: {:?}", args);
         }
 
         // get the stack pointer global
@@ -515,6 +506,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                                 *(address as *mut u64).add(1) = unwind_data_end;
                             }
     
+                            // mark the state to unwind
                             let _res = func.call(&mut caller, unwind_pointer as i32);
                         }
                         Err(err) => {
@@ -573,12 +565,15 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             // unwind finished and we need to stop the unwind
             let _res = asyncify_stop_unwind_func.call(&mut store, ());
 
+            // to-do: exec should not change the process id/cage id, however, the exec call from rustposix takes an
+            // argument to change the process id. If we pass the same cageid, it would cause some error
             // lind_exec(cloned_pid as u64, cloned_pid as u64);
             let ret = exec(&cloned_run_command, path_str, &args, cloned_pid, &cloned_next_cageid, &cloned_lind_manager);
 
             return Ok(OnCalledAction::Finish(ret.expect("exec-ed module error")));
         }));
 
+        // after returning from here, unwind process should start
         return Ok(0);
     }
 
@@ -599,34 +594,26 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
     }
 
     fn fork_memory(&mut self, store: &StoreOpaque) {
+        // allow shadowing means define a symbol that already exits would replace the old one
         self.linker.allow_shadowing(true);
         for import in self.module.imports() {
             if let Some(m) = import.ty().memory() {
                 if m.is_shared() {
+                    // define a new shared memory for the child
                     let mem = SharedMemory::new(self.module.engine(), m.clone()).unwrap();
                     self.linker.define_with_inner(store, import.module(), import.name(), mem.clone()).unwrap();
                 }
             }
         }
+        // set shadowing state back
         self.linker.allow_shadowing(false);
     }
 
     pub fn fork(&self) -> Self {
-        // let pid = match self.next_process_id() {
-        //     Some(id) => id,
-        //     None => {
-        //         // to-do: should have a better error handling
-        //         // instead of just panicking here
-        //         panic!("running out of process id");
-        //     }
-        // };
-
         let forked_ctx = Self {
-            // instance_pre: self.instance_pre.clone(),
             linker: self.linker.clone(),
             module: self.module.clone(),
             pid: 0,
-            // next_pid: self.next_pid.clone(),
             next_cageid: self.next_cageid.clone(),
             lind_manager: self.lind_manager.clone(),
             run_command: self.run_command.clone()
