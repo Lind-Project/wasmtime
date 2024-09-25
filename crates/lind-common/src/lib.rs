@@ -34,12 +34,14 @@ impl LindCommonCtx {
                         (&self, call_number: u32, call_name: u64, caller: &mut Caller<'_, T>, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64, arg6: u64) -> i32 {
         let start_address = get_memory_base(&caller);
         match call_number as i32 {
-            rawposix::librawposix::LIND_SAFE_SYS_CLONE => {
+            // clone
+            171 => {
                 let clone_args = unsafe { &mut *((arg1 + start_address) as *mut wasmtime_lind::CloneArgStruct) };
                 clone_args.child_tid += start_address;
                 wasmtime_lind::clone_syscall(caller, clone_args)
             }
-            rawposix::librawposix::LIND_SAFE_FS_EXEC => {
+            // exec
+            69 => {
                 wasmtime_lind::exec_syscall(caller, arg1 as i64, arg2 as i64)
             }
             _ => {
