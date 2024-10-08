@@ -64,6 +64,21 @@ pub const CLONE_IO: u64 =	0x80000000;	/* Clone I/O context.  */
    clone3 syscalls.  */
 pub const CLONE_NEWTIME: u64 =	0x00000080;      /* New time namespace */
 
+fn print_memory_segment(addr: *const u8, length: usize, bytes_per_line: usize) {
+    unsafe {
+        let slice = std::slice::from_raw_parts(addr, length);
+        for (i, byte) in slice.iter().enumerate() {
+            print!("{:02X} ", byte);
+            if (i + 1) % bytes_per_line == 0 {
+                println!(); // Newline after every `bytes_per_line` bytes
+            }
+        }
+        if length % bytes_per_line != 0 {
+            println!(); // Final newline if the last line is incomplete
+        }
+    }
+}
+
 // Define the trait with the required method
 pub trait LindHost<T, U> {
     fn get_ctx(&self) -> LindCtx<T, U>;
@@ -178,6 +193,64 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 rewinding: false,
                 retval: 0,
             });
+
+            // let set_stack_pointer_func;
+            // if let Some(set_stack_pointer_extern) = caller.get_export("set_stack_pointer") {
+            //     match set_stack_pointer_extern {
+            //         Extern::Func(set_stack_pointer) => {
+            //             match set_stack_pointer.typed::<i32, ()>(&caller) {
+            //                 Ok(func) => {
+            //                     set_stack_pointer_func = func;
+            //                 }
+            //                 Err(err) => {
+            //                     println!("the signature of set_stack_pointer function is not correct: {:?}", err);
+            //                     return Ok(-1);
+            //                 }
+            //             }
+            //         },
+            //         _ => {
+            //             println!("set_stack_pointer export is not a function");
+            //             return Ok(-1);
+            //         }
+            //     }
+            // }
+            // else {
+            //     println!("set_stack_pointer export not found");
+            //     return Ok(-1);
+            // }
+
+            // // get the stack pointer global
+            // let new_stack_pointer;
+            // if let Some(sp_extern) = caller.get_export("__stack_pointer") {
+            //     match sp_extern {
+            //         Extern::Global(sp) => {
+            //             match sp.get(&mut caller) {
+            //                 Val::I32(val) => {
+            //                     new_stack_pointer = val;
+            //                 }
+            //                 _ => {
+            //                     println!("__stack_pointer export is not an i32");
+            //                     return Ok(-1);
+            //                 }
+            //             }
+            //         },
+            //         _ => {
+            //             println!("__stack_pointer export is not a Global");
+            //             return Ok(-1);
+            //         }
+            //     }
+            // }
+            // else {
+            //     println!("__stack_pointer export not found");
+            //     return Ok(-1);
+            // }
+
+            // if retval != 0 {
+            //     println!("after rewind, parent stack pointer: {}", new_stack_pointer);
+            // } else {
+            //     println!("after rewind, child stack pointer: {}", new_stack_pointer);
+            //     // let _ = set_stack_pointer_func.call(&mut caller, 200000);
+            // }
 
             // if retval != 0 {
             //     loop {
@@ -504,8 +577,14 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                     let values = Vec::new();
                     let mut results = vec![Val::null_func_ref(); ty.results().len()];
 
-                    let _invoke_res = child_start_func
+                    let invoke_res = child_start_func
                         .call(&mut store, &values, &mut results);
+
+                    if let Err(err) = invoke_res {
+                        let e = wasi_common::maybe_exit_on_error(err);
+                        eprintln!("Error: {:?}", e);
+                        return 0;
+                    }
 
                     // get the exit code of the module
                     let exit_code = results.get(0).expect("_start function does not have a return value");
@@ -558,78 +637,16 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         //     return Ok(-1);
         // }
 
-        // if fork is called during the rewinding process
-        // that would mean fork has completed and we want to stop the rewind
-        // and return the fork result
-        // if caller.as_context().get_rewinding_state().rewinding {
-        //     // stop the rewind
-        //     if let Some(asyncify_stop_rewind_extern) = caller.get_export(ASYNCIFY_STOP_REWIND) {
-        //         match asyncify_stop_rewind_extern {
-        //             Extern::Func(asyncify_stop_rewind) => {
-        //                 match asyncify_stop_rewind.typed::<(), ()>(&caller) {
-        //                     Ok(func) => {
-        //                         let _res = func.call(&mut caller, ());
-        //                     }
-        //                     Err(err) => {
-        //                         println!("the signature of asyncify_stop_rewind is not correct: {:?}", err);
-        //                         return Ok(-1);
-        //                     }
-        //                 }
-        //             },
-        //             _ => {
-        //                 println!("asyncify_stop_rewind export is not a function");
-        //                 return Ok(-1);
-        //             }
-        //         }
-        //     }
-        //     else {
-        //         println!("asyncify_stop_rewind export not found");
-        //         return Ok(-1);
-        //     }
-
-        //     // retrieve the fork return value
-        //     let retval = caller.as_context().get_rewinding_state().retval;
-
-        //     // set rewinding state to false
-        //     caller.as_context_mut().set_rewinding_state(RewindingReturn {
-        //         rewinding: false,
-        //         retval: 0,
-        //     });
-
-        //     return Ok(retval);
-        // }
-
         // get the base address of the memory
         let handle = caller.as_context().0.instance(InstanceId::from_index(0));
         let defined_memory = handle.get_memory(MemoryIndex::from_u32(0));
         let address = defined_memory.base;
         let parent_addr_len = defined_memory.current_length();
 
+        let parent_stack_base = caller.as_context().get_stack_top();
+
         // get the stack pointer global
-        let stack_pointer;
-        if let Some(sp_extern) = caller.get_export("__stack_pointer") {
-            match sp_extern {
-                Extern::Global(sp) => {
-                    match sp.get(&mut caller) {
-                        Val::I32(val) => {
-                            stack_pointer = val;
-                        }
-                        _ => {
-                            println!("__stack_pointer export is not an i32");
-                            return Ok(-1);
-                        }
-                    }
-                },
-                _ => {
-                    println!("__stack_pointer export is not a Global");
-                    return Ok(-1);
-                }
-            }
-        }
-        else {
-            println!("__stack_pointer export not found");
-            return Ok(-1);
-        }
+        let stack_pointer = caller.get_stack_pointer().unwrap();
 
         // start unwind
         if let Some(asyncify_start_unwind_extern) = caller.get_export(ASYNCIFY_START_UNWIND) {
@@ -637,7 +654,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 Extern::Func(asyncify_start_unwind) => {
                     match asyncify_start_unwind.typed::<i32, ()>(&caller) {
                         Ok(func) => {
-                            let unwind_pointer: u64 = 0;
+                            let unwind_pointer: u64 = parent_stack_base;
                             // 8 because we need to store unwind_data_start and unwind_data_end
                             // at the beginning of the unwind stack as the parameter for asyncify_start_unwind
                             // each of them are u64, so together is 8 bytes
@@ -725,6 +742,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
 
         // we want to send this address to child thread
         let cloned_address = address as u64;
+        let parent_stack_bottom = caller.as_context().get_stack_base();
 
         // retrieve the child host
         let mut child_host = caller.data().clone();
@@ -772,15 +790,36 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             // unwind finished and we need to stop the unwind
             let _res = asyncify_stop_unwind_func.call(&mut store, ());
 
-            let rewind_base = 0;
+            let rewind_base = parent_stack_base;
 
             let rewind_pointer: u64 = rewind_base;
-            let rewind_pointer_child = rewind_base + stack_addr as u64 - stack_size as u64;
+            let rewind_pointer_child = stack_addr as u64 - stack_size as u64;
 
             let rewind_start_parent = (cloned_address + rewind_pointer) as *mut u8;
             let rewind_start_child = (cloned_address + rewind_pointer_child) as *mut u8;
             let rewind_total_size = (unwind_stack_finish - rewind_base) as usize;
+            // copy the unwind data to child stack
             unsafe { std::ptr::copy_nonoverlapping(rewind_start_parent, rewind_start_child, rewind_total_size); }
+            unsafe {
+                // value used to restore the stack pointer is stored at offset of 0xc (12) from unwind data start
+                // let's retrieve it
+                let stack_pointer_address = rewind_start_child.add(12) as *mut u32;
+                // offset = parent's stack bottom - stored sp (how far is stored sp from parent's stack bottom)
+                println!("parent_stack_bottom: {}, stored sp: {}, stack_addr: {}", parent_stack_bottom, *stack_pointer_address, stack_addr);
+                let offset = parent_stack_bottom as u32 - *stack_pointer_address;
+                // child stored sp = child's stack bottom - offset = child's stack bottom - (parent's stack bottom - stored sp)
+                // child stored sp = child's stack bottom - parent's stack bottom + stored sp
+                // keep child's stored sp same distance from its stack bottom
+                let child_sp_val = stack_addr as u32 - offset;
+                // replace the stored stack pointer in child's unwind data
+                *stack_pointer_address = child_sp_val;
+
+                // first 4 bytes in unwind data represent the address of the end of the unwind data
+                // we also need to change this for child
+                let child_rewind_data_start = *(rewind_start_child as *mut u32) + rewind_pointer_child as u32;
+
+                *(rewind_start_child as *mut u32) = child_rewind_data_start;
+            }
 
             let builder = thread::Builder::new().name(format!("lind-thread-{}", next_tid));
             builder.spawn(move || {
@@ -805,6 +844,14 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 // instantiate the module
                 let instance = instance_pre.instantiate(&mut store).unwrap();
 
+                // we might also want to perserve the offset of current stack pointer to stack bottom
+                // not very sure if this is required, but just keep everything the same from parent seems to be good
+                let offset = parent_stack_base as i32 - stack_pointer;
+                let stack_pointer_setter = instance
+                    .get_typed_func::<(i32), ()>(&mut store, "set_stack_pointer")
+                    .unwrap();
+                let _ = stack_pointer_setter.call(&mut store, stack_addr - offset);
+
                 // get the asyncify_rewind_start and module start function
                 let child_rewind_start;
 
@@ -826,11 +873,8 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                     retval: 0,
                 });
 
-                // for thread, we need to manually set stack_pointer
-                let stack_pointer_setter = instance
-                    .get_typed_func::<(i32), ()>(&mut store, "set_stack_pointer")
-                    .unwrap();
-                let _ = stack_pointer_setter.call(&mut store, stack_addr);
+                // set stack base for child
+                store.as_context_mut().set_stack_top(rewind_pointer_child);
 
                 // main thread calls fork, then we calls from _start function
                 let child_start_func = instance
@@ -842,8 +886,14 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 let values = Vec::new();
                 let mut results = vec![Val::null_func_ref(); ty.results().len()];
 
-                let _invoke_res = child_start_func
+                let invoke_res = child_start_func
                     .call(&mut store, &values, &mut results);
+
+                if let Err(err) = invoke_res {
+                    let e = wasi_common::maybe_exit_on_error(err);
+                    eprintln!("Error: {:?}", e);
+                    return 0;
+                }
 
                 // get the exit code of the module
                 let exit_code = results.get(0).expect("_start function does not have a return value");
@@ -869,6 +919,9 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 rewinding: true,
                 retval: next_tid as i32,
             });
+
+
+            // loop {}
 
             // return InvokeAgain here would make parent re-invoke main
             return Ok(OnCalledAction::InvokeAgain);

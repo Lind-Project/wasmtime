@@ -17,6 +17,8 @@ use wasmtime_environ::{
     EntityIndex, EntityType, FuncIndex, GlobalIndex, MemoryIndex, PrimaryMap, TableIndex, TypeTrace,
 };
 
+use super::Val;
+
 /// An instantiated WebAssembly module.
 ///
 /// This type represents the instantiation of a [`Module`]. Once instantiated
@@ -450,6 +452,31 @@ impl Instance {
         let instance = store.instance(data.id);
         let (export_name_index, _, &entity) = instance.module().exports.get_full(name)?;
         self._get_export(store, entity, export_name_index)
+    }
+
+    pub fn get_stack_pointer(&self, mut store: impl AsContextMut) -> Result<i32, ()> {
+        if let Some(sp_extern) = self.get_export(store.as_context_mut(), "__stack_pointer") {
+            match sp_extern {
+                Extern::Global(sp) => {
+                    match sp.get(store.as_context_mut()) {
+                        Val::I32(val) => {
+                            return Ok(val);
+                        }
+                        _ => {
+                            return Err(());
+                        }
+                    }
+                },
+                _ => {
+                    return Err(());
+                }
+            }
+        }
+        else {
+            return Err(());
+        }
+        
+        return Err(());
     }
 
     /// Looks up an exported [`Extern`] value by a [`ModuleExport`] value.

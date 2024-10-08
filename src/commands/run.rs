@@ -17,7 +17,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use wasi_common::sync::{ambient_authority, Dir, TcpListener, WasiCtxBuilder};
-use wasmtime::{Engine, Func, Module, Store, StoreLimits, Val, ValType};
+use wasmtime::{AsContextMut, Engine, Func, Module, Store, StoreLimits, Val, ValType};
 use wasmtime_wasi::WasiView;
 
 use wasmtime_lind_utils::LindCageManager;
@@ -212,6 +212,7 @@ impl RunCommand {
                 lind_manager.decrement();
                 // we wait until all other cage exits
                 lind_manager.wait();
+                println!("main finalize");
                 // after all cage exits, finalize the lind
                 rawposix::lind_lindrustfinalize();
             },
@@ -560,6 +561,9 @@ impl RunCommand {
                         .get_func(&mut *store, "")
                         .or_else(|| instance.get_func(&mut *store, "_start"))
                 };
+
+                let mut stack_pointer = instance.get_stack_pointer(store.as_context_mut()).unwrap();
+                store.as_context_mut().set_stack_base(stack_pointer as u64);
 
                 match func {
                     Some(func) => self.invoke_func(store, func),

@@ -330,6 +330,10 @@ pub struct StoreOpaque {
     host_globals: Vec<StoreBox<VMHostGlobalContext>>,
 
     rewinding: RewindingReturn,
+    // stack top
+    stack_top: u64,
+    // stack bottom
+    stack_base: u64,
 
     // GC-related fields.
     gc_store: Option<GcStore>,
@@ -534,6 +538,8 @@ impl<T> Store<T> {
                 #[cfg(feature = "component-model")]
                 num_component_instances: 0,
                 signal_handler: None,
+                stack_top: 0,
+                stack_base: 0,
                 gc_store: None,
                 gc_roots: RootSet::default(),
                 gc_roots_list: GcRootsList::default(),
@@ -644,6 +650,8 @@ impl<T> Store<T> {
             #[cfg(feature = "component-model")]
             num_component_instances: 0,
             signal_handler: None,
+            stack_top: 0,
+            stack_base: 0,
             gc_store: None,
             gc_roots: RootSet::default(),
             gc_roots_list: GcRootsList::default(),
@@ -1218,6 +1226,16 @@ impl<'a, T> StoreContext<'a, T> {
     pub fn get_rewinding_state(&self) -> RewindingReturn {
         self.0.rewinding
     }
+
+    /// get stack top
+    pub fn get_stack_top(&self) -> u64 {
+        self.0.stack_top
+    }
+
+    /// get stack base
+    pub fn get_stack_base(&self) -> u64 {
+        self.0.stack_base
+    }
 }
 
 impl<'a, T> StoreContextMut<'a, T> {
@@ -1306,6 +1324,26 @@ impl<'a, T> StoreContextMut<'a, T> {
     /// set current rewinding state
     pub fn set_rewinding_state(&mut self, state: RewindingReturn) {
         self.0.rewinding = state;
+    }
+
+    /// get stack top
+    pub fn get_stack_top(&self) -> u64 {
+        self.0.stack_top
+    }
+
+    /// set stack top
+    pub fn set_stack_top(&mut self, stack_top: u64) {
+        self.0.stack_top = stack_top;
+    }
+
+    /// get stack base
+    pub fn get_stack_base(&self) -> u64 {
+        self.0.stack_base
+    }
+
+    /// set stack base
+    pub fn set_stack_base(&mut self, stack_base: u64) {
+        self.0.stack_base = stack_base;
     }
 
     /// Configures epoch-deadline expiration to yield to the async

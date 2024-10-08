@@ -2111,6 +2111,13 @@ impl<T> Caller<'_, T> {
             .get_export(&mut self.store, name)
     }
 
+    pub fn get_stack_pointer(&mut self) -> Result<i32, ()> {
+        self.caller
+            .host_state()
+            .downcast_ref::<Instance>().ok_or(()).unwrap()
+            .get_stack_pointer(&mut self.store)
+    }
+
     /// Access the underlying data owned by this `Store`.
     ///
     /// Same as [`Store::data`](crate::Store::data)
