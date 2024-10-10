@@ -42,7 +42,7 @@ impl LindCommonCtx {
             }
             // exec
             69 => {
-                wasmtime_lind::exec_syscall(caller, arg1 as i64, arg2 as i64)
+                wasmtime_lind::exec_syscall(caller, arg1 as i64, arg2 as i64, arg3 as i64)
             }
             _ => {
                 rawposix::lind_syscall_inner(self.pid as u64, call_number, call_name, start_address, arg1, arg2, arg3, arg4, arg5, arg6)

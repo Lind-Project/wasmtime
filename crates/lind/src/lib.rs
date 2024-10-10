@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use wasi_common::WasiCtx;
-use wasmtime_lind_utils::LindCageManager;
+use wasmtime_lind_utils::{parse_env_var, LindCageManager};
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -113,7 +113,7 @@ pub struct LindCtx<T, U> {
     fork_host: Arc<dyn Fn(&T) -> T + Send + Sync + 'static>,
 
     // exec the host
-    exec_host: Arc<dyn Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>) -> Result<Vec<Val>> + Send + Sync + 'static>,
+    exec_host: Arc<dyn Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>, &Option<Vec<(String, Option<String>)>>) -> Result<Vec<Val>> + Send + Sync + 'static>,
 }
 
 impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync> LindCtx<T, U> {
@@ -121,7 +121,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                next_cageid: Arc<AtomicU64>,
                get_cx: impl Fn(&mut T) -> &mut LindCtx<T, U> + Send + Sync + 'static,
                fork_host: impl Fn(&T) -> T + Send + Sync + 'static,
-               exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>) -> Result<Vec<Val>> + Send + Sync + 'static,
+               exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>, &Option<Vec<(String, Option<String>)>>) -> Result<Vec<Val>> + Send + Sync + 'static,
             ) -> Result<Self> {
         // this method should only be called once from run.rs, other instances of LindCtx
         // are supposed to be created from fork() method
@@ -141,7 +141,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
     pub fn new_with_pid(module: Module, linker: Linker<T>, lind_manager: Arc<LindCageManager>, run_command: U, pid: i32, next_cageid: Arc<AtomicU64>,
                         get_cx: impl Fn(&mut T) -> &mut LindCtx<T, U> + Send + Sync + 'static,
                         fork_host: impl Fn(&T) -> T + Send + Sync + 'static,
-                        exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>) -> Result<Vec<Val>> + Send + Sync + 'static,
+                        exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>, &Option<Vec<(String, Option<String>)>>) -> Result<Vec<Val>> + Send + Sync + 'static,
         ) -> Result<Self> {
 
         let get_cx = Arc::new(get_cx);
@@ -931,9 +931,10 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         return Ok(0);
     }
 
-    pub fn execv_call(&self, mut caller: &mut Caller<'_, T>,
+    pub fn execve_call(&self, mut caller: &mut Caller<'_, T>,
                              path: i64,
                              argv: i64,
+                             envs: Option<i64>
                      ) -> Result<i32> {
         // get the base address of the memory
         let handle = caller.as_context().0.instance(InstanceId::from_index(0));
@@ -947,6 +948,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         // NOTE: the address passed from wasm module is 32-bit address
         let argv_ptr = ((address as i64) + argv) as *const *const u8;
         let mut args = Vec::new();
+        let mut environs = None;
 
         unsafe {
             // Manually find the null terminator
@@ -982,6 +984,38 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 i += 1;  // Move to the next argument
             }
         }
+
+        if let Some(envs_addr) = envs {
+            let env_ptr = ((address as i64) + envs_addr) as *const *const u8;
+            let mut env_vec = Vec::new();
+
+            unsafe {
+                let mut i = 0;
+    
+                // Iterate over argv until we encounter a NULL pointer
+                loop {
+                    let c_str = *(env_ptr as *const i32).add(i) as *const i32;
+    
+                    if c_str.is_null() {
+                        break;  // Stop if we encounter NULL
+                    }
+    
+                    let env_ptr = ((address as i64) + (c_str as i64)) as *const c_char;
+    
+                    // Convert it to a Rust String
+                    let env = CStr::from_ptr(env_ptr)
+                        .to_string_lossy()
+                        .into_owned();
+                    let parsed = parse_env_var(&env);
+                    env_vec.push(parsed);
+    
+                    i += 1;  // Move to the next argument
+                }
+            }
+            environs = Some(env_vec);
+        }
+
+        // println!("args: {:?}, envs: {:?}", args, environs);
 
         // get the stack pointer global
         let stack_pointer;
@@ -1091,7 +1125,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             // to-do: exec should not change the process id/cage id, however, the exec call from rustposix takes an
             // argument to change the process id. If we pass the same cageid, it would cause some error
             // lind_exec(cloned_pid as u64, cloned_pid as u64);
-            let ret = exec_call(&cloned_run_command, path_str, &args, cloned_pid, &cloned_next_cageid, &cloned_lind_manager);
+            let ret = exec_call(&cloned_run_command, path_str, &args, cloned_pid, &cloned_next_cageid, &cloned_lind_manager, &environs);
 
             return Ok(OnCalledAction::Finish(ret.expect("exec-ed module error")));
         }));
@@ -1887,7 +1921,7 @@ pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync, U: Clone + S
     get_cx_mut: impl Fn(&mut T) -> &mut LindCtx<T, U> + Send + Sync + Copy + 'static,
     get_wasi_cx: impl Fn(&mut T) -> &mut WasiCtx + Send + Sync + Copy + 'static,
     fork_host: impl Fn(&T) -> T + Send + Sync + Copy + 'static,
-    exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>) -> Result<Vec<Val>> + Send + Sync + Copy + 'static,
+    exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>, &Option<Vec<(String, Option<String>)>>) -> Result<Vec<Val>> + Send + Sync + Copy + 'static,
 ) -> anyhow::Result<()> {
     // linker.func_wrap(
     //     "lind",
@@ -1931,7 +1965,7 @@ pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync, U: Clone + S
     //         let host = caller.data().clone();
     //         let ctx = get_cx(&host);
 
-    //         match ctx.execv_call(&mut caller, path, argv, exec)  {
+    //         match ctx.execve_call(&mut caller, path, argv, exec)  {
     //             Ok(ret) => {
     //                 ret
     //             }
@@ -2071,11 +2105,11 @@ pub fn clone_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::S
 }
 
 pub fn exec_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>
-        (caller: &mut Caller<'_, T>, path: i64, argv: i64) -> i32 {
+        (caller: &mut Caller<'_, T>, path: i64, argv: i64, envs: i64) -> i32 {
     let host = caller.data().clone();
     let ctx = host.get_ctx();
 
-    match ctx.execv_call(caller, path, argv)  {
+    match ctx.execve_call(caller, path, argv, Some(envs))  {
         Ok(ret) => {
             ret
         }
