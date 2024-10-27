@@ -207,7 +207,7 @@ impl RunCommand {
         match result {
             Ok(_) => {
                 // exit the cage
-                // rawposix::lind_exit(1, 0);
+                rawposix::lind_exit(1, 0);
                 // main cage exits
                 lind_manager.decrement();
                 // we wait until all other cage exits
