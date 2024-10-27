@@ -4597,8 +4597,8 @@ dependencies = [
  "wasmtime-cranelift",
  "wasmtime-environ",
  "wasmtime-explorer",
- "wasmtime-lind",
  "wasmtime-lind-common",
+ "wasmtime-lind-multi-process",
  "wasmtime-lind-utils",
  "wasmtime-test-macros",
  "wasmtime-wasi",
@@ -4819,7 +4819,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasmtime-lind"
+name = "wasmtime-lind-common"
+version = "23.0.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "rand",
+ "rawposix",
+ "wasmtime",
+ "wasmtime-environ",
+ "wasmtime-lind-multi-process",
+]
+
+[[package]]
+name = "wasmtime-lind-multi-process"
 version = "23.0.0"
 dependencies = [
  "anyhow",
@@ -4830,19 +4843,6 @@ dependencies = [
  "wasmtime",
  "wasmtime-environ",
  "wasmtime-lind-utils",
-]
-
-[[package]]
-name = "wasmtime-lind-common"
-version = "23.0.0"
-dependencies = [
- "anyhow",
- "log",
- "rand",
- "rawposix",
- "wasmtime",
- "wasmtime-environ",
- "wasmtime-lind",
 ]
 
 [[package]]

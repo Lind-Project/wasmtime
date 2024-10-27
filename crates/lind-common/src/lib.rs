@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use wasmtime_environ::MemoryIndex;
-use wasmtime_lind::{get_memory_base, LindHost};
+use wasmtime_lind_multi_process::{get_memory_base, LindHost, clone_constants::CloneArgStruct};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Condvar, Mutex};
 use wasmtime::{AsContext, AsContextMut, Caller, ExternType, Linker, Module, SharedMemory, Store, Val, Extern, OnCalledAction, RewindingReturn, StoreOpaque, InstanceId};
@@ -20,7 +20,6 @@ impl LindCommonCtx {
     pub fn new(next_cageid: Arc<AtomicU64>) -> Result<Self> {
         // cage id starts from 1
         let pid = 1;
-        // let next_cageid = Arc::new(AtomicU64::new(1)); // cageid starts from 1
         Ok(Self { pid, next_cageid })
     }
 
@@ -36,14 +35,19 @@ impl LindCommonCtx {
         match call_number as i32 {
             // clone
             171 => {
-                let clone_args = unsafe { &mut *((arg1 + start_address) as *mut wasmtime_lind::CloneArgStruct) };
+                let clone_args = unsafe { &mut *((arg1 + start_address) as *mut CloneArgStruct) };
                 clone_args.child_tid += start_address;
-                wasmtime_lind::clone_syscall(caller, clone_args)
+                wasmtime_lind_multi_process::clone_syscall(caller, clone_args)
             }
             // exec
             69 => {
-                wasmtime_lind::exec_syscall(caller, arg1 as i64, arg2 as i64, arg3 as i64)
+                wasmtime_lind_multi_process::exec_syscall(caller, arg1 as i64, arg2 as i64, arg3 as i64)
             }
+            // exit
+            30 => {
+                wasmtime_lind_multi_process::exit_syscall(caller, arg1 as i32)
+            }
+            // other syscalls go into rawposix
             _ => {
                 rawposix::lind_syscall_inner(self.pid as u64, call_number, call_name, start_address, arg1, arg2, arg3, arg4, arg5, arg6)
             }
@@ -82,6 +86,7 @@ pub fn add_to_linker<T: LindHost<T, U> + Clone + Send + 'static + std::marker::S
     linker: &mut wasmtime::Linker<T>,
     get_cx: impl Fn(&T) -> &LindCommonCtx + Send + Sync + Copy + 'static,
 ) -> anyhow::Result<()> {
+    // attach lind_syscall to wasmtime
     linker.func_wrap(
         "lind",
         "lind-syscall",

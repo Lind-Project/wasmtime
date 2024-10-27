@@ -3,6 +3,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Condvar, Mutex};
 
+// used to manage global active cage count. Used to determine when wasmtime can exit
+// (i.e. only after all the cages exited, we can exit the process)
+// this class may be used by many crates (e.g. lind-commmon, lind-multi-process)
+// therefore put into a seperate module to prevent cyclic dependency
 #[allow(missing_docs)]
 #[derive(Default)]
 pub struct LindCageManager {
@@ -39,6 +43,7 @@ impl LindCageManager {
     }
 }
 
+// parse an environment variable, return its name and value
 pub fn parse_env_var(env_var: &str) -> (String, Option<String>) {
     // Find the position of the first '=' character
     if let Some(pos) = env_var.find('=') {

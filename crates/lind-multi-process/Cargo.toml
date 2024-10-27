@@ -1,8 +1,8 @@
 [package]
-name = "wasmtime-lind"
+name = "wasmtime-lind-multi-process"
 version.workspace = true
 authors.workspace = true
-description = "lind implementation inside wasmtime"
+description = "lind multi-process implementation inside wasmtime"
 edition.workspace = true
 
 [lints]

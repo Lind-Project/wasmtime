@@ -9,7 +9,7 @@ use crate::common::{Profile, RunCommon, RunTarget};
 
 use anyhow::{anyhow, bail, Context as _, Error, Result};
 use clap::Parser;
-use wasmtime_lind::{LindCtx, LindHost};
+use wasmtime_lind_multi_process::{LindCtx, LindHost};
 use wasmtime_lind_common::LindCommonCtx;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -859,30 +859,10 @@ impl RunCommand {
         {
             let linker = match linker {
                 CliLinker::Core(linker) => linker,
-                _ => bail!("lind-fork does not support components yet"),
+                _ => bail!("lind-multi-process does not support components yet"),
             };
             let module = module.unwrap_core();
 
-            wasmtime_lind::add_to_linker::<Host, RunCommand>(linker, |host| {
-                host.lind_fork_ctx.as_ref().unwrap()
-            },|host| {
-                host.lind_fork_ctx.as_mut().unwrap()
-            }
-            , |host| {
-                host.preview1_ctx.as_mut().unwrap()
-            }, |host| {
-                host.fork()
-            }, |run_command, path, args, pid, next_cageid, lind_manager, envs| {
-                    let mut new_run_command = run_command.clone();
-                    new_run_command.module_and_args = vec![OsString::from(path)];
-                    if let Some(envs) = envs {
-                        new_run_command.run.vars = envs.clone();
-                    }
-                    for arg in args.iter().skip(1) {
-                        new_run_command.module_and_args.push(OsString::from(arg));
-                    }
-                    new_run_command.execute_with_lind(lind_manager.clone(), pid, next_cageid.clone())
-            })?;
             if let Some(pid) = pid {
                 store.data_mut().lind_fork_ctx = Some(LindCtx::new_with_pid(
                     module.clone(),

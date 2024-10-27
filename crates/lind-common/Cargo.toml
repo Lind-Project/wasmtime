@@ -2,7 +2,7 @@
 name = "wasmtime-lind-common"
 version.workspace = true
 authors.workspace = true
-description = "lind implementation inside wasmtime"
+description = "lind interface within wasmtime"
 edition.workspace = true
 
 [lints]
@@ -15,4 +15,4 @@ rand = "0.8"
 wasmtime = { workspace = true, features = ['threads'] }
 wasmtime-environ = { workspace = true }
 rawposix = { path = "../rawposix" }
-wasmtime-lind = { path = "../lind" }
+wasmtime-lind-multi-process = { path = "../lind-multi-process" }

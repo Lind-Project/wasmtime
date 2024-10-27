@@ -2,7 +2,7 @@
 name = "wasmtime-lind-utils"
 version.workspace = true
 authors.workspace = true
-description = "lind implementation inside wasmtime"
+description = "lind utils"
 edition.workspace = true
 
 [lints]

@@ -13,56 +13,12 @@ use wasmtime::{AsContext, AsContextMut, Caller, ExternType, Linker, Module, Shar
 
 use wasmtime_environ::MemoryIndex;
 
+pub mod clone_constants;
+
 const ASYNCIFY_START_UNWIND: &str = "asyncify_start_unwind";
 const ASYNCIFY_STOP_UNWIND: &str = "asyncify_stop_unwind";
 const ASYNCIFY_START_REWIND: &str = "asyncify_start_rewind";
 const ASYNCIFY_STOP_REWIND: &str = "asyncify_stop_rewind";
-
-#[derive(Copy, Clone, Default, Debug)]
-#[repr(C)]
-pub struct CloneArgStruct {
-    pub flags: u64,           // Flags that control the behavior of the child process
-    pub pidfd: u64,           // File descriptor to receive the child's PID
-    pub child_tid: u64,       // Pointer to a memory location where the child TID will be stored
-    pub parent_tid: u64,      // Pointer to a memory location where the parent's TID will be stored
-    pub exit_signal: u64,     // Signal to be sent when the child process exits
-    pub stack: u64,           // Address of the stack for the child process
-    pub stack_size: u64,      // Size of the stack for the child process
-    pub tls: u64,             // Thread-Local Storage (TLS) descriptor for the child thread
-    pub set_tid: u64,         // Pointer to an array of TIDs to be set in the child
-    pub set_tid_size: u64,    // Number of TIDs in the `set_tid` array
-    pub cgroup: u64,          // File descriptor for the cgroup to which the child process should be attached
-}
-
-/* Cloning flags.  */
-pub const CSIGNAL: u64 =       0x000000ff; /* Signal mask to be sent at exit.  */
-pub const CLONE_VM: u64 =      0x00000100; /* Set if VM shared between processes.  */
-pub const CLONE_FS: u64 =      0x00000200; /* Set if fs info shared between processes.  */
-pub const CLONE_FILES: u64 =   0x00000400; /* Set if open files shared between processes.  */
-pub const CLONE_SIGHAND: u64 = 0x00000800; /* Set if signal handlers shared.  */
-pub const CLONE_PIDFD: u64 =   0x00001000; /* Set if a pidfd should be placed in parent.  */
-pub const CLONE_PTRACE: u64 =  0x00002000; /* Set if tracing continues on the child.  */
-pub const CLONE_VFORK: u64 =   0x00004000; /* Set if the parent wants the child to wake it up on mm_release.  */
-pub const CLONE_PARENT: u64 =  0x00008000; /* Set if we want to have the same parent as the cloner.  */
-pub const CLONE_THREAD: u64 =  0x00010000; /* Set to add to same thread group.  */
-pub const CLONE_NEWNS: u64 =   0x00020000; /* Set to create new namespace.  */
-pub const CLONE_SYSVSEM: u64 = 0x00040000; /* Set to shared SVID SEM_UNDO semantics.  */
-pub const CLONE_SETTLS: u64 =  0x00080000; /* Set TLS info.  */
-pub const CLONE_PARENT_SETTID: u64 = 0x00100000; /* Store TID in userlevel buffer before MM copy.  */
-pub const CLONE_CHILD_CLEARTID: u64 = 0x00200000; /* Register exit futex and memory location to clear.  */
-pub const CLONE_DETACHED: u64 = 0x00400000; /* Create clone detached.  */
-pub const CLONE_UNTRACED: u64 = 0x00800000; /* Set if the tracing process can't force CLONE_PTRACE on this clone.  */
-pub const CLONE_CHILD_SETTID: u64 = 0x01000000; /* Store TID in userlevel buffer in the child.  */
-pub const CLONE_NEWCGROUP: u64 =    0x02000000;	/* New cgroup namespace.  */
-pub const CLONE_NEWUTS: u64 =	0x04000000;	/* New utsname group.  */
-pub const CLONE_NEWIPC: u64 =	0x08000000;	/* New ipcs.  */
-pub const CLONE_NEWUSER: u64 =	0x10000000;	/* New user namespace.  */
-pub const CLONE_NEWPID: u64 =	0x20000000;	/* New pid namespace.  */
-pub const CLONE_NEWNET: u64 =	0x40000000;	/* New network namespace.  */
-pub const CLONE_IO: u64 =	0x80000000;	/* Clone I/O context.  */
-/* cloning flags intersect with CSIGNAL so can be used only with unshare and
-   clone3 syscalls.  */
-pub const CLONE_NEWTIME: u64 =	0x00000080;      /* New time namespace */
 
 // Define the trait with the required method
 pub trait LindHost<T, U> {
@@ -138,6 +94,8 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         Ok(Self { linker, module: module.clone(), pid, next_cageid, next_threadid, lind_manager: lind_manager.clone(), run_command, get_cx, fork_host, exec_host })
     }
 
+    // check if current process is in rewind state
+    // if yes, stop the rewind and return the clone syscall result
     pub fn catch_rewind(&self, mut caller: &mut Caller<'_, T>) -> Result<i32> {
         if caller.as_context().get_rewinding_state().rewinding {
             // stop the rewind
@@ -180,6 +138,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         Ok(-1)
     }
 
+    // fork syscall
     pub fn fork_call(&self, mut caller: &mut Caller<'_, T>
                 ) -> Result<i32> {
         // if !support_asyncify(instance_pre.module()) {
@@ -303,6 +262,8 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             println!("running out of cageid!");
         }
         let child_cageid = child_cageid.unwrap();
+
+        // calling fork in rawposix to fork the cage
         rawposix::lind_fork(self.pid as u64, child_cageid);
 
         // use the same engine for parent and child
@@ -380,6 +341,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 }
 
                 // copy the entire memory area from parent to child
+                // this will be changed after mmap has been integrated into lind-wasm
                 unsafe { std::ptr::copy_nonoverlapping(cloned_address as *mut u8, child_address, address_length); }
 
                 // new cage created, increment the cage counter
@@ -410,15 +372,10 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 });
 
                 if store.is_thread() {
-                    // fork inside a thread is possible but not common
-                    // when fork happened inside a thread, it will only fork that specific thread
-                    // and left other threads un-copied.
-                    // to support this, we can just store the thread start args and calling wasi_thread_start
-                    // with the same start args here instead of _start entry.
-                    // however, since this is not a common practice, so we do not support this right now
+                    // fork inside a thread is currently not supported
                     return -1;
                 } else {
-                    // main thread calls fork, then we calls from _start function
+                    // main thread calls fork, then we just call _start function
                     let child_start_func = instance
                         .get_func(&mut store, "_start")
                         .ok_or_else(|| anyhow!("no func export named `_start` found")).unwrap();
@@ -431,6 +388,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                     let invoke_res = child_start_func
                         .call(&mut store, &values, &mut results);
 
+                    // print errors if any when running the child process
                     if let Err(err) = invoke_res {
                         let e = wasi_common::maybe_exit_on_error(err);
                         eprintln!("Error: {:?}", e);
@@ -446,7 +404,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                             // let _ = on_child_exit(*val);
                         },
                         _ => {
-                            println!("unexpected _start function return type!");
+                            eprintln!("unexpected _start function return type!");
                         }
                     }
 
@@ -457,6 +415,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 return 0;
             }).unwrap();
 
+            // wait until child has fully copied the memory
             barrier.wait();
 
             // mark the parent to rewind state
@@ -476,6 +435,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         return Ok(0);
     }
 
+    // shared-memory version of fork syscall, used to create a new thread
     pub fn fork_shared_call(&self, mut caller: &mut Caller<'_, T>,
                     stack_addr: i32, stack_size: i32, child_tid: u64
                 ) -> Result<i32> {
@@ -656,7 +616,6 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 // let's retrieve it
                 let stack_pointer_address = rewind_start_child.add(12) as *mut u32;
                 // offset = parent's stack bottom - stored sp (how far is stored sp from parent's stack bottom)
-                println!("parent_stack_bottom: {}, stored sp: {}, stack_addr: {}", parent_stack_bottom, *stack_pointer_address, stack_addr);
                 let offset = parent_stack_bottom as u32 - *stack_pointer_address;
                 // child stored sp = child's stack bottom - offset = child's stack bottom - (parent's stack bottom - stored sp)
                 // child stored sp = child's stack bottom - parent's stack bottom + stored sp
@@ -681,16 +640,12 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 let child_ctx = get_cx(&mut child_host);
                 child_ctx.pid = child_cageid as i32;
 
-                // create a new memory area for child
-                // child_ctx.fork_memory(&store_inner, parent_addr_len);
                 let instance_pre = Arc::new(child_ctx.linker.instantiate_pre(&child_ctx.module).unwrap());
 
                 let mut store = Store::new_with_inner(&engine, child_host, store_inner);
 
-                // if parent is a thread, so does the child
-                if is_parent_thread {
-                    store.set_is_thread(true);
-                }
+                // mark as thread
+                store.set_is_thread(true);
 
                 // instantiate the module
                 let instance = instance_pre.instantiate(&mut store).unwrap();
@@ -740,6 +695,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 let invoke_res = child_start_func
                     .call(&mut store, &values, &mut results);
 
+                // print errors if any when running the thread
                 if let Err(err) = invoke_res {
                     let e = wasi_common::maybe_exit_on_error(err);
                     eprintln!("Error: {:?}", e);
@@ -750,12 +706,11 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 let exit_code = results.get(0).expect("_start function does not have a return value");
                 match exit_code {
                     Val::I32(val) => {
-                        // technically we need to do some clean up here if necessary
-                        // like clean up signal stuff
-                        // but signal is still WIP so this is a placeholder for this in the future
+                        // technically we need to do some clean up here like cleaning up signal stuff
+                        // but signal is still WIP so this is a placeholder for it in the future
                     },
                     _ => {
-                        println!("unexpected _start function return type: {:?}", exit_code);
+                        eprintln!("unexpected _start function return type: {:?}", exit_code);
                     }
                 }
 
@@ -779,6 +734,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         return Ok(0);
     }
 
+    // execve syscall
     pub fn execve_call(&self, mut caller: &mut Caller<'_, T>,
                              path: i64,
                              argv: i64,
@@ -813,6 +769,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
 
             let mut i = 0;
 
+            // parse the arg pointers
             // Iterate over argv until we encounter a NULL pointer
             loop {
                 let c_str = *(argv_ptr as *const i32).add(i) as *const i32;
@@ -833,6 +790,12 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             }
         }
 
+        // if the file to exec does not exist
+        if !std::path::Path::new(path_str).exists() {
+            return Ok(-2);
+        }
+
+        // parse the environment variables
         if let Some(envs_addr) = envs {
             let env_ptr = ((address as i64) + envs_addr) as *const *const u8;
             let mut env_vec = Vec::new();
@@ -862,8 +825,6 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             }
             environs = Some(env_vec);
         }
-
-        // println!("args: {:?}, envs: {:?}", args, environs);
 
         // get the stack pointer global
         let stack_pointer;
@@ -982,6 +943,9 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         return Ok(0);
     }
 
+    // exit syscall
+    // technically this is pthread_exit syscall
+    // actual exit syscall that would kill other threads is not supported yet
     pub fn exit_call(&self, mut caller: &mut Caller<'_, T>, code: i32) {
         // get the base address of the memory
         let handle = caller.as_context().0.instance(InstanceId::from_index(0));
@@ -1091,6 +1055,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         }
     }
 
+    // used by fork syscall
     fn fork_memory(&mut self, store: &StoreOpaque, size: usize) {
         // allow shadowing means defining a symbol that already exits would replace the old one
         self.linker.allow_shadowing(true);
@@ -1110,6 +1075,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         self.linker.allow_shadowing(false);
     }
 
+    // fork the state
     pub fn fork(&self) -> Self {
         let forked_ctx = Self {
             linker: self.linker.clone(),
@@ -1128,34 +1094,14 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
     }
 }
 
-pub fn add_to_linker<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>(
-    linker: &mut wasmtime::Linker<T>,
-    get_cx: impl Fn(&T) -> &LindCtx<T, U> + Send + Sync + Copy + 'static,
-    get_cx_mut: impl Fn(&mut T) -> &mut LindCtx<T, U> + Send + Sync + Copy + 'static,
-    get_wasi_cx: impl Fn(&mut T) -> &mut WasiCtx + Send + Sync + Copy + 'static,
-    fork_host: impl Fn(&T) -> T + Send + Sync + Copy + 'static,
-    exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>, &Option<Vec<(String, Option<String>)>>) -> Result<Vec<Val>> + Send + Sync + Copy + 'static,
-) -> anyhow::Result<()> {
-    linker.func_wrap(
-        "wasix",
-        "lind-exit",
-        move |mut caller: Caller<'_, T>, code: i32| {
-            let host = caller.data().clone();
-            let ctx = get_cx(&host);
-
-            ctx.exit_call(&mut caller, code);
-        },
-    )?;
-
-    Ok(())
-}
-
+// get the base address of the wasm process
 pub fn get_memory_base<T: Clone + Send + 'static + std::marker::Sync>(caller: &Caller<'_, T>) -> u64 {
     let handle = caller.as_context().0.instance(InstanceId::from_index(0));
     let defined_memory = handle.get_memory(MemoryIndex::from_u32(0));
     defined_memory.base as u64
 }
 
+// entry point of fork syscall
 pub fn lind_fork<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>
         (caller: &mut Caller<'_, T>) -> Result<i32> {
     let host = caller.data().clone();
@@ -1163,6 +1109,7 @@ pub fn lind_fork<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync,
     ctx.fork_call(caller)
 }
 
+// entry point of pthread_create syscall
 pub fn lind_fork_shared_memory<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>
         (caller: &mut Caller<'_, T>,
         stack_addr: i32, stack_size: i32, child_tid: u64) -> Result<i32> {
@@ -1171,14 +1118,16 @@ pub fn lind_fork_shared_memory<T: LindHost<T, U> + Clone + Send + 'static + std:
     ctx.fork_shared_call(caller, stack_addr, stack_size, child_tid)
 }
 
+// entry point of catch_rewind
 pub fn catch_rewind<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>(caller: &mut Caller<'_, T>) -> Result<i32> {
     let host = caller.data().clone();
     let ctx = host.get_ctx();
     ctx.catch_rewind(caller)
 }
 
+// entry point of clone_syscall, called by lind-common
 pub fn clone_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>
-        (caller: &mut Caller<'_, T>, args: &mut CloneArgStruct) -> i32
+        (caller: &mut Caller<'_, T>, args: &mut clone_constants::CloneArgStruct) -> i32
 {
     let rewind_res = match catch_rewind(caller) {
         Ok(val) => val,
@@ -1191,7 +1140,7 @@ pub fn clone_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::S
     let flags = args.flags;
     // if CLONE_VM is set, we are creating a new thread (i.e. pthread_create)
     // otherwise, we are creating a process (i.e. fork)
-    let isthread = flags & (CLONE_VM as u64);
+    let isthread = flags & (clone_constants::CLONE_VM as u64);
 
     if isthread == 0 {
         match lind_fork(caller) {
@@ -1208,6 +1157,7 @@ pub fn clone_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::S
     }
 }
 
+// entry point of exec_syscall, called by lind-common
 pub fn exec_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>
         (caller: &mut Caller<'_, T>, path: i64, argv: i64, envs: i64) -> i32 {
     let host = caller.data().clone();
@@ -1222,6 +1172,17 @@ pub fn exec_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sy
             -1
         }
     }
+}
+
+pub fn exit_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>
+        (caller: &mut Caller<'_, T>, exit_code: i32) -> i32 {
+    let host = caller.data().clone();
+    let ctx = host.get_ctx();
+
+    ctx.exit_call(caller, exit_code);
+    
+    // exit syscall should not fail
+    0
 }
 
 fn support_asyncify(module: &Module) -> bool {
