@@ -1352,6 +1352,10 @@ impl InstanceHandle {
         self.instance().get_memory(index)
     }
 
+    pub fn get_runtime_memory(&mut self, index: MemoryIndex) -> &mut Memory {
+        self.instance_mut().get_runtime_memory(index)
+    }
+
     /// Lookup an item with the given index.
     pub fn get_export_by_index(&mut self, export: EntityIndex) -> Export {
         match export {

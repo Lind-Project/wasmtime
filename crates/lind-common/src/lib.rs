@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
+use rawposix::safeposix::dispatcher::lind_syscall_api;
 use wasmtime_environ::MemoryIndex;
 use wasmtime_lind_multi_process::{get_memory_base, LindHost, clone_constants::CloneArgStruct};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,11 +48,35 @@ impl LindCommonCtx {
             30 => {
                 wasmtime_lind_multi_process::exit_syscall(caller, arg1 as i32)
             }
+            // mmap
+            // 21 => {
+            //     self.mmap_syscalll(caller, arg1 as u32, arg2 as u32, arg3 as u64, arg4 as u64, arg5 as u64, arg6 as u64)
+            // }
             // other syscalls go into rawposix
             _ => {
-                rawposix::lind_syscall_inner(self.pid as u64, call_number, call_name, start_address, arg1, arg2, arg3, arg4, arg5, arg6)
+                lind_syscall_api(
+                    self.pid as u64,
+                    call_number,
+                    call_name,
+                    start_address,
+                    arg1,
+                    arg2,
+                    arg3,
+                    arg4,
+                    arg5,
+                    arg6,
+                )
             }
         }
+    }
+
+    // temporary location
+    pub fn mmap_syscalll<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>
+                        (&self, caller: &mut Caller<'_, T>, addr: u32, length: u32, prot: u64, flags: u64, fd: u64, offset: u64) -> i32 {
+        println!("mmap syscall, addr: {}, length: {}, prot: {}, flags: {}, fd: {}, offset: {}", addr, length, prot, flags, fd, offset);
+        let handle = caller.as_context_mut().0.instance_mut(InstanceId::from_index(0));
+        let memory = handle.get_runtime_memory(MemoryIndex::from_u32(0));
+        0
     }
 
     pub fn getpid(&self) -> i32 {

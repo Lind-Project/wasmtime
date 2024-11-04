@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
+use rawposix::safeposix::dispatcher::lind_syscall_api;
 use wasi_common::WasiCtx;
 use wasmtime_lind_utils::{parse_env_var, LindCageManager};
 
@@ -264,7 +265,18 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         let child_cageid = child_cageid.unwrap();
 
         // calling fork in rawposix to fork the cage
-        rawposix::lind_fork(self.pid as u64, child_cageid);
+        lind_syscall_api(
+            self.pid as u64,
+            68 as u32, // fork syscall
+            0,
+            0,
+            child_cageid,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
 
         // use the same engine for parent and child
         let engine = self.module.engine().clone();
@@ -400,7 +412,18 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                     match exit_code {
                         Val::I32(val) => {
                             // exit the cage with the exit code
-                            rawposix::lind_exit(child_cageid, *val);
+                            lind_syscall_api(
+                                child_cageid,
+                                30 as u32,
+                                0,
+                                0,
+                                *val as u64,
+                                0,
+                                0,
+                                0,
+                                0,
+                                0,
+                            );
                             // let _ = on_child_exit(*val);
                         },
                         _ => {

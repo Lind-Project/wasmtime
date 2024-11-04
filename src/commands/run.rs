@@ -9,6 +9,7 @@ use crate::common::{Profile, RunCommon, RunTarget};
 
 use anyhow::{anyhow, bail, Context as _, Error, Result};
 use clap::Parser;
+use rawposix::safeposix::dispatcher::lind_syscall_api;
 use wasmtime_lind_multi_process::{LindCtx, LindHost};
 use wasmtime_lind_common::LindCommonCtx;
 use std::ffi::OsString;
@@ -178,7 +179,7 @@ impl RunCommand {
         }
 
         // Initialize Lind here
-        rawposix::lind_lindrustinit(0);
+        rawposix::safeposix::dispatcher::lindrustinit(0);
         if let Some(ctx) = &mut store.data_mut().preview1_ctx {
             ctx.set_lind_cageid(1);
         }
@@ -207,13 +208,25 @@ impl RunCommand {
         match result {
             Ok(_) => {
                 // exit the cage
-                rawposix::lind_exit(1, 0);
+                lind_syscall_api(
+                    1,
+                    30 as u32,
+                    0,
+                    0,
+                    0 as u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                );
+                
                 // main cage exits
                 lind_manager.decrement();
                 // we wait until all other cage exits
                 lind_manager.wait();
                 // after all cage exits, finalize the lind
-                rawposix::lind_lindrustfinalize();
+                rawposix::safeposix::dispatcher::lindrustfinalize();
             },
             Err(e) => {
                 // Exit the process if Wasmtime understands the error;
