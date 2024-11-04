@@ -48,11 +48,6 @@ impl LindCommonCtx {
             30 => {
                 wasmtime_lind_multi_process::exit_syscall(caller, arg1 as i32)
             }
-            // mmap
-            // 21 => {
-            //     self.mmap_syscalll(caller, arg1 as u32, arg2 as u32, arg3 as u64, arg4 as u64, arg5 as u64, arg6 as u64)
-            // }
-            // other syscalls go into rawposix
             _ => {
                 lind_syscall_api(
                     self.pid as u64,
