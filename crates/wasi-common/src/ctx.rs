@@ -120,14 +120,16 @@ impl WasiCtx {
         Ok(())
     }
 
+    // handle how the wasi context should be cloned when fork happens
     pub fn fork(&self) -> Self {
         let forked_ctx = WasiCtxInner {
-            args: self.args.clone(),
-            env: self.env.clone(),
+            args: self.args.clone(), // we want to clone the entire args
+            env: self.env.clone(), // as well as environment variables
+            // below are currently not used by glibc in lind-wasm, so doesn't really matter how to handle them for now
             random: Mutex::new(random_ctx()),
             clocks: clocks_ctx(),
-            sched: sched_ctx(), // to-do: not sure about this one
-            table: Table::new(), // to-do: we should really fork the table instead of creating a new one
+            sched: sched_ctx(),
+            table: Table::new(),
         };
         
         let ctx = Self(Arc::new(forked_ctx));
