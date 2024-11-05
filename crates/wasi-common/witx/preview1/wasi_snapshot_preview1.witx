@@ -518,17 +518,4 @@
     (param $how $sdflags)
     (result $error (expected (error $errno)))
   )
-
-  (@interface func (export "lind_syscall")
-    ;;; The memory parameter is not needed in the WITX definition.
-    (param $call_number u32)
-    (param $call_name u64)
-    (param $arg1 u64)
-    (param $arg2 u64)
-    (param $arg3 u64)
-    (param $arg4 u64)
-    (param $arg5 u64)
-    (param $arg6 u64)
-    (result $error (expected $size (error $errno)))
-  )
 )

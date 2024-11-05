@@ -3,12 +3,13 @@ use crate::dir::{DirEntry, WasiDir};
 use crate::file::{FileAccessMode, FileEntry, WasiFile};
 use crate::sched::WasiSched;
 use crate::string_array::StringArray;
+use crate::sync::{clocks_ctx, random_ctx, sched_ctx};
 use crate::table::Table;
 use crate::{Error, StringArrayError};
 use cap_rand::RngCore;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// An `Arc`-wrapper around the wasi-common context to allow mutable access to
 /// the file descriptor table. This wrapper is only necessary due to the
@@ -117,6 +118,21 @@ impl WasiCtx {
         self.table()
             .push(Arc::new(DirEntry::new(Some(path.as_ref().to_owned()), dir)))?;
         Ok(())
+    }
+
+    pub fn fork(&self) -> Self {
+        let forked_ctx = WasiCtxInner {
+            args: self.args.clone(),
+            env: self.env.clone(),
+            random: Mutex::new(random_ctx()),
+            clocks: clocks_ctx(),
+            sched: sched_ctx(), // to-do: not sure about this one
+            table: Table::new(), // to-do: we should really fork the table instead of creating a new one
+        };
+        
+        let ctx = Self(Arc::new(forked_ctx));
+
+        return ctx;
     }
 }
 
