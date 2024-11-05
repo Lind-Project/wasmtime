@@ -3,13 +3,12 @@ use crate::dir::{DirEntry, WasiDir};
 use crate::file::{FileAccessMode, FileEntry, WasiFile};
 use crate::sched::WasiSched;
 use crate::string_array::StringArray;
-use crate::sync::{clocks_ctx, random_ctx, sched_ctx};
 use crate::table::Table;
 use crate::{Error, StringArrayError};
 use cap_rand::RngCore;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 /// An `Arc`-wrapper around the wasi-common context to allow mutable access to
 /// the file descriptor table. This wrapper is only necessary due to the
@@ -29,7 +28,6 @@ pub struct WasiCtxInner {
     pub clocks: WasiClocks,
     pub sched: Box<dyn WasiSched>,
     pub table: Table,
-    pub lind_cageid: RwLock<u64>,
 }
 
 impl WasiCtx {
@@ -38,9 +36,7 @@ impl WasiCtx {
         clocks: WasiClocks,
         sched: Box<dyn WasiSched>,
         table: Table,
-        lind_cageid: u64
     ) -> Self {
-        let lind_cageid = RwLock::new(lind_cageid);
         let s = WasiCtx(Arc::new(WasiCtxInner {
             args: StringArray::new(),
             env: StringArray::new(),
@@ -48,7 +44,6 @@ impl WasiCtx {
             clocks,
             sched,
             table,
-            lind_cageid,
         }));
         s.set_stdin(Box::new(crate::pipe::ReadPipe::new(std::io::empty())));
         s.set_stdout(Box::new(crate::pipe::WritePipe::new(std::io::sink())));
@@ -122,33 +117,6 @@ impl WasiCtx {
         self.table()
             .push(Arc::new(DirEntry::new(Some(path.as_ref().to_owned()), dir)))?;
         Ok(())
-    }
-
-    pub fn set_lind_cageid(&mut self, lind_cageid: u64) {
-        let inner = self.0.clone();
-
-        let mut cageid = inner.lind_cageid.write().expect("Failed to acquire write lock");
-        *cageid = lind_cageid;
-    }
-
-    pub fn get_lind_cageid(&self) -> u64 {
-        return *self.lind_cageid.read().unwrap();
-    }
-
-    pub fn fork(&self) -> Self {
-        let forked_ctx = WasiCtxInner {
-            args: self.args.clone(),
-            env: self.env.clone(),
-            random: Mutex::new(random_ctx()),
-            clocks: clocks_ctx(),
-            sched: sched_ctx(), // to-do: not sure about this one
-            table: Table::new(), // to-do: we should really fork the table instead of creating a new one
-            lind_cageid: RwLock::new(self.get_lind_cageid()),
-        };
-        
-        let ctx = Self(Arc::new(forked_ctx));
-
-        return ctx;
     }
 }
 

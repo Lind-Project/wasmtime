@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 extern crate libc;
 pub mod librustposix {
     use libc::{
@@ -176,7 +174,6 @@ pub mod librustposix {
         pub(crate) fn rustposix_thread_init(cageid: u64, signalflag: u64);
 
         pub(crate) fn lind_syscall_api(
-            cageid: u64,
             call_number: u32,
             call_name: u64,
             start_address: u64,
@@ -189,8 +186,6 @@ pub mod librustposix {
         ) -> u32;
     }
 }
-
-use std::sync::{Condvar, Mutex};
 
 use crate::librustposix::*;
 
@@ -264,59 +259,7 @@ pub fn lind_write_inner(fd: i32, buf: *const u8, count: usize, cageid: u64) {
     }
 }
 
-pub fn lind_fork(parent_cageid: u64, child_cageid: u64) -> u32 {
-    unsafe {
-        lind_syscall_api(
-            parent_cageid,
-            LIND_SAFE_FS_FORK as u32,
-            0,
-            0,
-            child_cageid,
-            0,
-            0,
-            0,
-            0,
-            0,
-        )
-    }
-}
-
-pub fn lind_exit(cageid: u64, status: i32) -> u32 {
-    unsafe {
-        lind_syscall_api(
-            cageid,
-            LIND_SAFE_SYS_EXIT as u32,
-            0,
-            0,
-            status as u64,
-            0,
-            0,
-            0,
-            0,
-            0,
-        )
-    }
-}
-
-pub fn lind_exec(parent_cageid: u64, child_cageid: u64) -> u32 {
-    unsafe {
-        lind_syscall_api(
-            parent_cageid,
-            LIND_SAFE_FS_EXEC as u32,
-            0,
-            0,
-            child_cageid,
-            0,
-            0,
-            0,
-            0,
-            0,
-        )
-    }
-}
-
 pub fn lind_syscall_inner(
-    cageid: u64,
     call_number: u32,
     call_name: u64,
     start_address: u64,
@@ -329,7 +272,6 @@ pub fn lind_syscall_inner(
 ) -> u32 {
     unsafe {
         lind_syscall_api(
-            cageid,
             call_number,
             call_name,
             start_address,
