@@ -120,6 +120,10 @@ impl WasiCtx {
         Ok(())
     }
 
+    // Currently we are still using wasi_preview1 interface to handle command line arguments and environment variables
+    // We could implement our own handler for command line arguments and environment variables but its just more convenient to
+    // use the existing stuff in wasi_preview1
+    // fields like `random`, `clocks`, etc are related to other functions in wasi_preview1, which is not used in glibc.
     // handle how the wasi context should be cloned when fork happens
     pub fn fork(&self) -> Self {
         let forked_ctx = WasiCtxInner {
