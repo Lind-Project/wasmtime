@@ -207,14 +207,19 @@ impl RunCommand {
 
         // Load the main wasm module.
         match result {
-            Ok(_) => {
+            Ok(res) => {
+                let mut code = 0;
+                let retval = res.get(0).unwrap();
+                if let Val::I32(res) = retval {
+                    code = *res;
+                }
                 // exit the cage
                 lind_syscall_api(
                     1,
                     30 as u32,
                     0,
                     0,
-                    0 as u64,
+                    code as u64,
                     0,
                     0,
                     0,
@@ -580,7 +585,8 @@ impl RunCommand {
 
                 let handle = store.as_context().0.instance(wasmtime::InstanceId::from_index(0));
                 let defined_memory = handle.get_memory(wasmtime_environ::MemoryIndex::from_u32(0));
-                let memory_base = defined_memory.base as u64;
+                let memory_base = defined_memory.base as i64;
+                rawposix::safeposix::dispatcher::set_base_address(1, memory_base);
                 // rawposix::safeposix::dispatcher::lind_syscall_api(1, 21, 0, memory_base, 0, 327680, (PROT_READ | PROT_WRITE) as u64, (MAP_PRIVATE | MAP_ANONYMOUS) as u64, u64::max_value(), 0);
 
                 match func {

@@ -352,9 +352,12 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                     address_length = defined_memory.current_length();
                 }
 
+                // println!("parent: {}, child: {}, len: {}", cloned_address, child_address as u64, address_length);
+                rawposix::safeposix::dispatcher::set_base_address(child_cageid, child_address as i64);
+                rawposix::safeposix::dispatcher::fork_vmmap_helper(parent_pid as u64, child_cageid);
                 // copy the entire memory area from parent to child
                 // this will be changed after mmap has been integrated into lind-wasm
-                unsafe { std::ptr::copy_nonoverlapping(cloned_address as *mut u8, child_address, address_length); }
+                // unsafe { std::ptr::copy_nonoverlapping(cloned_address as *mut u8, child_address, address_length); }
 
                 // new cage created, increment the cage counter
                 lind_manager.increment();
