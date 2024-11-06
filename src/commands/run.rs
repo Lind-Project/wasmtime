@@ -180,9 +180,6 @@ impl RunCommand {
 
         // Initialize Lind here
         rawposix::safeposix::dispatcher::lindrustinit(0);
-        if let Some(ctx) = &mut store.data_mut().preview1_ctx {
-            ctx.set_lind_cageid(1);
-        }
         // new cage is created
         lind_manager.increment();
 
@@ -358,10 +355,6 @@ impl RunCommand {
                     bail!("--preload cannot be used with components");
                 }
             }
-        }
-
-        if let Some(ctx) = &mut store.data_mut().preview1_ctx {
-            ctx.set_lind_cageid(pid as u64);
         }
 
         // Pre-emptively initialize and install a Tokio runtime ambiently in the
