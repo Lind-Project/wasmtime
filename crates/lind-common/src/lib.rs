@@ -74,6 +74,7 @@ impl LindCommonCtx {
     }
 
     // get current process id/cageid
+    // currently unused interface but may be useful in the future
     pub fn getpid(&self) -> i32 {
         self.pid
     }
