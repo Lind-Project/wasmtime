@@ -171,6 +171,10 @@ impl RunCommand {
             }
         }
 
+        // Initialize Lind here
+        rustposix::lind_lindrustinit(0);
+
+
         // Pre-emptively initialize and install a Tokio runtime ambiently in the
         // environment when executing the module. Without this whenever a WASI
         // call is made that needs to block on a future a Tokio runtime is
@@ -191,7 +195,9 @@ impl RunCommand {
 
         // Load the main wasm module.
         match result {
-            Ok(()) => (),
+            Ok(()) => {
+                rustposix::lind_lindrustfinalize();
+            },
             Err(e) => {
                 // Exit the process if Wasmtime understands the error;
                 // otherwise, fall back on Rust's default error printing/return

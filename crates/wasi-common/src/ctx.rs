@@ -3,12 +3,13 @@ use crate::dir::{DirEntry, WasiDir};
 use crate::file::{FileAccessMode, FileEntry, WasiFile};
 use crate::sched::WasiSched;
 use crate::string_array::StringArray;
+use crate::sync::{clocks_ctx, random_ctx, sched_ctx};
 use crate::table::Table;
 use crate::{Error, StringArrayError};
 use cap_rand::RngCore;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// An `Arc`-wrapper around the wasi-common context to allow mutable access to
 /// the file descriptor table. This wrapper is only necessary due to the
@@ -117,6 +118,27 @@ impl WasiCtx {
         self.table()
             .push(Arc::new(DirEntry::new(Some(path.as_ref().to_owned()), dir)))?;
         Ok(())
+    }
+
+    // Currently we are still using wasi_preview1 interface to handle command line arguments and environment variables
+    // We could implement our own handler for command line arguments and environment variables but its just more convenient to
+    // use the existing stuff in wasi_preview1
+    // fields like `random`, `clocks`, etc are related to other functions in wasi_preview1, which is not used in glibc.
+    // handle how the wasi context should be cloned when fork happens
+    pub fn fork(&self) -> Self {
+        let forked_ctx = WasiCtxInner {
+            args: self.args.clone(), // we want to clone the entire args
+            env: self.env.clone(), // as well as environment variables
+            // below are currently not used by glibc in lind-wasm, so doesn't really matter how to handle them for now
+            random: Mutex::new(random_ctx()),
+            clocks: clocks_ctx(),
+            sched: sched_ctx(),
+            table: Table::new(),
+        };
+        
+        let ctx = Self(Arc::new(forked_ctx));
+
+        return ctx;
     }
 }
 

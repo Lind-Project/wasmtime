@@ -55,6 +55,13 @@ unsafe impl Send for GuestMemory<'_> {}
 unsafe impl Sync for GuestMemory<'_> {}
 
 impl<'a> GuestMemory<'a> {
+    // Re-add the base function, for rustposix to translate the 32-bit addresses to actual addr
+    pub fn base(&self) -> *const u8 {
+        match self {
+            GuestMemory::Unshared(slice) => slice.as_ptr(),
+            GuestMemory::Shared(slice) => slice.as_ptr() as *const u8,
+        }
+    }
     /// Read a value from the provided pointer.
     ///
     /// This method will delegate to `T`'s implementation of `read` which will
