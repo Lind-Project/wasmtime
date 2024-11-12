@@ -26,6 +26,10 @@ pub trait LindHost<T, U> {
     fn get_ctx(&self) -> LindCtx<T, U>;
 }
 
+// Closures are abused in this file, mainly because the architecture of wasmtime itself does not support
+// the sub modules to directly interact with the top level runtime engine. But multi-processing, especially exec syscall,
+// would heavily require to do so. So the only convenient way to break the rule and communicate with the
+// top level runtime engine is abusing closures.
 #[derive(Clone)]
 pub struct LindCtx<T, U> {
     // linker used by the module
@@ -59,6 +63,16 @@ pub struct LindCtx<T, U> {
 }
 
 impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync> LindCtx<T, U> {
+    // create a new LindContext
+    // Function Argument:
+    // * module: wasmtime module object, used to fork a new instance
+    // * linker: wasmtime function linker. Used to link the imported functions
+    // * lind_manager: global lind cage counter. Used to make sure the wasmtime runtime would only exit after all cages have exited
+    // * run_command: used by exec closure below.
+    // * next_cageid: a shared cage id counter, managed by lind-common.
+    // * get_cx: get lindContext from Host object
+    // * fork_host: closure to fork a host
+    // * exec: closure for the exec syscall entry
     pub fn new(module: Module, linker: Linker<T>, lind_manager: Arc<LindCageManager>, run_command: U,
                next_cageid: Arc<AtomicU64>,
                get_cx: impl Fn(&mut T) -> &mut LindCtx<T, U> + Send + Sync + 'static,
@@ -74,18 +88,26 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         
         // cage id starts from 1
         let pid = 1;
-        // let next_cageid = Arc::new(AtomicU64::new(1)); // cageid starts from 1
         let next_threadid = Arc::new(AtomicU32::new(1)); // cageid starts from 1
         Ok(Self { linker, module: module.clone(), pid, next_cageid, next_threadid, lind_manager: lind_manager.clone(), run_command, get_cx, fork_host, exec_host })
     }
 
-    // used by exec call
+    // create a new LindContext with provided pid (cageid). This function is used by exec_syscall to create a new lindContext
+    // Function Argument:
+    // * module: wasmtime module object, used to fork a new instance
+    // * linker: wasmtime function linker. Used to link the imported functions
+    // * lind_manager: global lind cage counter. Used to make sure the wasmtime runtime would only exit after all cages have exited
+    // * run_command: used by exec closure below.
+    // * pid: pid(cageid) associated with the context
+    // * next_cageid: a shared cage id counter, managed by lind-common.
+    // * get_cx: get lindContext from Host object
+    // * fork_host: closure to fork a host
+    // * exec: closure for the exec syscall entry
     pub fn new_with_pid(module: Module, linker: Linker<T>, lind_manager: Arc<LindCageManager>, run_command: U, pid: i32, next_cageid: Arc<AtomicU64>,
                         get_cx: impl Fn(&mut T) -> &mut LindCtx<T, U> + Send + Sync + 'static,
                         fork_host: impl Fn(&T) -> T + Send + Sync + 'static,
                         exec: impl Fn(&U, &str, &Vec<String>, i32, &Arc<AtomicU64>, &Arc<LindCageManager>, &Option<Vec<(String, Option<String>)>>) -> Result<Vec<Val>> + Send + Sync + 'static,
         ) -> Result<Self> {
-
         let get_cx = Arc::new(get_cx);
         let fork_host = Arc::new(fork_host);
         let exec_host = Arc::new(exec);
@@ -94,6 +116,58 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
 
         Ok(Self { linker, module: module.clone(), pid, next_cageid, next_threadid, lind_manager: lind_manager.clone(), run_command, get_cx, fork_host, exec_host })
     }
+
+    // The way multi-processing works depends on Asyncify from Binaryen. Asyncify marks the process into 3 states:
+    // normal state, unwind state and rewind state.
+    // During the normal state, the process continues its execution as normal.
+    // During the unwind state, the process is undergoing quick callstack unwind and the function context are saved.
+    // During the rewind state, the process is restoring the callstack it saved.
+    // Asyncify is a 2nd stage compilation that adds on top of the 1st stage compilation. After asyncify, the function
+    // logic would become something like this:
+    // ```
+    // function A() {
+    //     if current state == rewind {
+    //         restore_function_context();
+    //     }
+    //     if current state == normal {
+    //         ... some user code ...
+    //         B();
+    //     }
+    //     if current state == unwind {
+    //         save_function_context();
+    //         return;
+    //     }
+    //     if current state == normal {
+    //         ... some user code ...
+    //     }
+    // }
+    // function B() {
+    //     if current state == rewind {
+    //         restore_function_context();
+    //     }
+    //     if current state == normal {
+    //         ... some user code ...
+    //         asyncify_start_unwind();
+    //     }
+    //     if current state == unwind {
+    //         save_function_context();
+    //         return;
+    //     }
+    //     if current state == normal {
+    //         ... some user code ...
+    //     }
+    // }
+    // ```
+    // In this example, function B serves as the function that starts the callstack unwind. After calling
+    // asyncify_start_unwind() in function B, it will returns immediately from function B, then function A,
+    // with the context of each function saved.
+    // There are four Asyncify functions to control the global asyncify state:
+    // asyncify_start_unwind: start the callstack unwind. Essentially set the global state to unwind and return
+    // asyncify_stop_unwind: stop the callstack unwind. Essentially set the global state to normal and return
+    // asyncify_start_rewind: start the callstack rewind. Essentially set the global state to rewind and return
+    // asyncify_stop_rewind: stop the callstack rewind. Essentially set the global state to normal and return
+    // asyncify_start_unwind and asyncify_start_rewind also take an argument that specifies where to store/retrieve
+    // the saved function context
 
     // check if current process is in rewind state
     // if yes, stop the rewind and return the clone syscall result
@@ -108,19 +182,19 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                                 let _res = func.call(&mut caller, ());
                             }
                             Err(err) => {
-                                println!("the signature of asyncify_stop_rewind is not correct: {:?}", err);
+                                eprintln!("the signature of asyncify_stop_rewind is not correct: {:?}", err);
                                 return Ok(-1);
                             }
                         }
                     },
                     _ => {
-                        println!("asyncify_stop_rewind export is not a function");
+                        eprintln!("asyncify_stop_rewind export is not a function");
                         return Ok(-1);
                     }
                 }
             }
             else {
-                println!("asyncify_stop_rewind export not found");
+                eprintln!("asyncify_stop_rewind export not found");
                 return Ok(-1);
             }
 
@@ -139,18 +213,15 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         Ok(-1)
     }
 
-    // fork syscall
+    // fork syscall. Create a child wasm process that copied memory from parent. It works as follows:
+    // 1. fork a wasmtime host
+    // 2. call fork_syscall from rawposix to create a forked cage object
+    // 3. unwind the parent callstack and save the function context (unwind context)
+    // 4. create a new wasm instance from same module
+    // 5. fork the memory region to child (including saved unwind context)
+    // 6. start the rewind for both parent and child
     pub fn fork_call(&self, mut caller: &mut Caller<'_, T>
                 ) -> Result<i32> {
-        // if !support_asyncify(instance_pre.module()) {
-        //     log::error!("failed to find asyncify functions");
-        //     return Ok(-1);
-        // }
-        // if !has_correct_signature(instance_pre.module()) {
-        //     log::error!("the exported asyncify functions have incorrect signatures");
-        //     return Ok(-1);
-        // }
-
         // get the base address of the memory
         let handle = caller.as_context().0.instance(InstanceId::from_index(0));
         let defined_memory = handle.get_memory(MemoryIndex::from_u32(0));
@@ -288,23 +359,6 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         let store = caller.as_context_mut().0;
         let is_parent_thread = store.is_thread();
         store.set_on_called(Box::new(move |mut store| {
-            // let unwind_stack_finish;
-
-            // let address = cloned_address as *mut u64;
-            // let unwind_start_address = (cloned_address + 8) as *mut u64;
-
-            // unsafe {
-            //     unwind_stack_finish = *address;
-            // }
-
-            // let unwind_size = unwind_stack_finish - 8;
-            // let mut unwind_stack = Vec::with_capacity(unwind_size as usize);
-
-            // unsafe {
-            //     let src_slice = std::slice::from_raw_parts(unwind_start_address as *mut u8, unwind_size as usize);
-            //     unwind_stack.extend_from_slice(src_slice);
-            // }
-
             // unwind finished and we need to stop the unwind
             let _res = asyncify_stop_unwind_func.call(&mut store, ());
 
@@ -459,18 +513,16 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
     }
 
     // shared-memory version of fork syscall, used to create a new thread
+    // This is very similar to normal fork syscall, except the memory is not copied
+    // and the saved unwind context need to be carefully copied and managed since parent
+    // and child are operating two copies to unwind data in the same memory
+    // Function Argument:
+    // * stack_addr: child's base stack address
+    // * stack_size: child's stack size
+    // * child_tid: the address of the child's thread id. This should be set by wasmtime
     pub fn fork_shared_call(&self, mut caller: &mut Caller<'_, T>,
                     stack_addr: i32, stack_size: i32, child_tid: u64
                 ) -> Result<i32> {
-        // if !support_asyncify(instance_pre.module()) {
-        //     log::error!("failed to find asyncify functions");
-        //     return Ok(-1);
-        // }
-        // if !has_correct_signature(instance_pre.module()) {
-        //     log::error!("the exported asyncify functions have incorrect signatures");
-        //     return Ok(-1);
-        // }
-
         // get the base address of the memory
         let handle = caller.as_context().0.instance(InstanceId::from_index(0));
         let defined_memory = handle.get_memory(MemoryIndex::from_u32(0));
@@ -613,14 +665,6 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
                 unwind_stack_finish = *address;
             }
 
-            // let unwind_size = unwind_stack_finish - 8;
-            // let mut unwind_stack = Vec::with_capacity(unwind_size as usize);
-
-            // unsafe {
-            //     let src_slice = std::slice::from_raw_parts(unwind_start_address as *mut u8, unwind_size as usize);
-            //     unwind_stack.extend_from_slice(src_slice);
-            // }
-
             // unwind finished and we need to stop the unwind
             let _res = asyncify_stop_unwind_func.call(&mut store, ());
 
@@ -634,6 +678,9 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             let rewind_total_size = (unwind_stack_finish - rewind_base) as usize;
             // copy the unwind data to child stack
             unsafe { std::ptr::copy_nonoverlapping(rewind_start_parent, rewind_start_child, rewind_total_size); }
+            // manage child's unwind context. The unwind context is consumed when the process uses it to rewind the callstack
+            // so a seperate copy is needed for child. The unwind context also contains some absolute address that is relative to parent
+            // hence we also need to translate it to be relative to child's stack
             unsafe {
                 // value used to restore the stack pointer is stored at offset of 0xc (12) from unwind data start
                 // let's retrieve it
@@ -758,6 +805,10 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
     }
 
     // execve syscall
+    // Function Argument:
+    // * path: the address of the path string in wasm memory
+    // * argv: the address of the argument list in wasm memory
+    // * envs: the address of the environment variable list in wasm memory
     pub fn execve_call(&self, mut caller: &mut Caller<'_, T>,
                              path: i64,
                              argv: i64,
@@ -777,6 +828,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         let mut args = Vec::new();
         let mut environs = None;
 
+        // convert the address into a list of argument string
         unsafe {
             // Manually find the null terminator
             let mut len = 0;
@@ -815,6 +867,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
 
         // if the file to exec does not exist
         if !std::path::Path::new(path_str).exists() {
+            // return ENOENT
             return Ok(-2);
         }
 
@@ -1057,15 +1110,18 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         // after returning from here, unwind process should start
     }
 
+    // Get the pid associated with the context. Currently unused interface
     pub fn getpid(&self) -> i32 {
         self.pid
     }
 
+    // get the next cage id
     fn next_cage_id(&self) -> Option<u64> {
         // cageid is managed by lind-common
         return Some(self.next_cageid.load(Ordering::SeqCst));
     }
 
+    // get the next thread id
     fn next_thread_id(&self) -> Option<u32> {
         match self
             .next_threadid
@@ -1078,7 +1134,12 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         }
     }
 
-    // used by fork syscall
+    // fork the memory to child
+    // Memory is attached to Linker instead of a specific wasm instance since
+    // the memory needs to be shared between threads. To achieve this, we have to set the
+    // memory to be imported memory, then share the imported memory to all the child thread.
+    // Then when we want to fork a thread, we need to clone the Linker, then replace the
+    // imported memory that it links to a new memory region.
     fn fork_memory(&mut self, store: &StoreOpaque, size: usize) {
         // allow shadowing means defining a symbol that already exits would replace the old one
         self.linker.allow_shadowing(true);
@@ -1103,9 +1164,9 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
         let forked_ctx = Self {
             linker: self.linker.clone(),
             module: self.module.clone(),
-            pid: 0,
+            pid: 0, // pid is managed by lind-common
             next_cageid: self.next_cageid.clone(),
-            next_threadid: Arc::new(AtomicU32::new(1)),
+            next_threadid: Arc::new(AtomicU32::new(1)), // thread id starts from 1
             lind_manager: self.lind_manager.clone(),
             run_command: self.run_command.clone(),
             get_cx: self.get_cx.clone(),
@@ -1152,6 +1213,7 @@ pub fn catch_rewind<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sy
 pub fn clone_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>
         (caller: &mut Caller<'_, T>, args: &mut clone_constants::CloneArgStruct) -> i32
 {
+    // first let's check if the process is currently in rewind state
     let rewind_res = match catch_rewind(caller) {
         Ok(val) => val,
         Err(_) => -1
@@ -1208,6 +1270,7 @@ pub fn exit_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sy
     0
 }
 
+// check if the module has the necessary exported Asyncify functions
 fn support_asyncify(module: &Module) -> bool {
     module.get_export(ASYNCIFY_START_UNWIND).is_some() &&
     module.get_export(ASYNCIFY_STOP_UNWIND).is_some() &&
@@ -1215,6 +1278,7 @@ fn support_asyncify(module: &Module) -> bool {
     module.get_export(ASYNCIFY_STOP_REWIND).is_some()
 }
 
+// check if each exported Asyncify function has correct signature
 fn has_correct_signature(module: &Module) -> bool {
     if !match module.get_export(ASYNCIFY_START_UNWIND) {
         Some(ExternType::Func(ty)) => {

@@ -259,6 +259,8 @@ impl RunCommand {
         Ok(())
     }
 
+    // similar to `execute`` function above, except that this function is used by exec_syscall to execute a wasm module given the path
+    // the only big difference from `execute` function above is that pid and next_cageid are passed as argument instead of hard-coded
     fn execute_with_lind(mut self, lind_manager: Arc<LindCageManager>, pid: i32, next_cageid: Arc<AtomicU64>) -> Result<Vec<Val>> {
         let mut config = self.run.common.config(None, None)?;
 
@@ -659,29 +661,6 @@ impl RunCommand {
             return Err(self.handle_core_dump(&mut *store, err));
         }
 
-        // if !results.is_empty() {
-        //     eprintln!(
-        //         "warning: using `--invoke` with a function that returns values \
-        //          is experimental and may break in the future"
-        //     );
-        // }
-
-        // for result in results {
-        //     match result {
-        //         Val::I32(i) => println!("{}", i),
-        //         Val::I64(i) => println!("{}", i),
-        //         Val::F32(f) => println!("{}", f32::from_bits(f)),
-        //         Val::F64(f) => println!("{}", f64::from_bits(f)),
-        //         Val::V128(i) => println!("{}", i.as_u128()),
-        //         Val::ExternRef(None) => println!("<null externref>"),
-        //         Val::ExternRef(Some(_)) => println!("<externref>"),
-        //         Val::FuncRef(None) => println!("<null funcref>"),
-        //         Val::FuncRef(Some(_)) => println!("<funcref>"),
-        //         Val::AnyRef(None) => println!("<null anyref>"),
-        //         Val::AnyRef(Some(_)) => println!("<anyref>"),
-        //     }
-        // }
-
         Ok(results)
     }
 
@@ -842,6 +821,7 @@ impl RunCommand {
             }
         }
 
+        // attach Lind-Common-Context to the host
         let shared_next_cageid = Arc::new(AtomicU64::new(1));
 
         {
@@ -862,6 +842,7 @@ impl RunCommand {
             }
         }
 
+        // attach Lind-Multi-Process-Context to the host
         {
             let linker = match linker {
                 CliLinker::Core(linker) => linker,
@@ -869,6 +850,7 @@ impl RunCommand {
             };
             let module = module.unwrap_core();
 
+            // if pid is set, that means this function is called by execute_with_lind (exec-ed wasm instance)
             if let Some(pid) = pid {
                 store.data_mut().lind_fork_ctx = Some(LindCtx::new_with_pid(
                     module.clone(),
@@ -884,6 +866,8 @@ impl RunCommand {
                         host.fork()
                     },
                     |run_command, path, args, pid, next_cageid, lind_manager, envs| {
+                        // entry point of exec call. Fork self and replace the argument, environment variables and
+                        // execution path and starts execution
                         let mut new_run_command = run_command.clone();
                         new_run_command.module_and_args = vec![OsString::from(path)];
                         if let Some(envs) = envs {
@@ -895,6 +879,7 @@ impl RunCommand {
                         new_run_command.execute_with_lind(lind_manager.clone(), pid, next_cageid.clone())
                     }
                 )?);
+            // if pid is not set, then this function is called by the first wasm instance
             } else {
                 store.data_mut().lind_fork_ctx = Some(LindCtx::new(
                     module.clone(),
@@ -1054,12 +1039,16 @@ impl Host {
     }
 
     #[allow(missing_docs)]
+    // fork the Host, basically determines what context we want to fork for the new Host
     pub fn fork(&self) -> Self {
+        // we want to do a real fork for wasi_preview1 context since glibc uses the environment variable
+        // related interface here
         let forked_preview1_ctx = match &self.preview1_ctx {
             Some(ctx) => Some(ctx.fork()),
             None => None
         };
 
+        // and we also want to fork the lind-common context and lind-multi-process context
         let forked_lind_fork_ctx = match &self.lind_fork_ctx {
             Some(ctx) => Some(ctx.fork()),
             None => None
@@ -1070,20 +1059,23 @@ impl Host {
             None => None
         };
 
+        // besides preview1_ctx, lind_common_ctx and forked_lind_fork_ctx, we do not
+        // care about other context since they are not used by glibc so we can just share
+        // them between processes
         let forked_host = Self {
             preview1_ctx: forked_preview1_ctx,
-            preview2_ctx: self.preview2_ctx.clone(), // to-do
+            preview2_ctx: self.preview2_ctx.clone(),
             lind_fork_ctx: forked_lind_fork_ctx,
             lind_common_ctx: forked_lind_common_ctx,
             #[cfg(feature = "wasi-nn")]
-            wasi_nn: self.wasi_nn.clone(), // to-do
+            wasi_nn: self.wasi_nn.clone(),
             #[cfg(feature = "wasi-threads")]
-            wasi_threads: self.wasi_threads.clone(), // to-do
+            wasi_threads: self.wasi_threads.clone(),
             #[cfg(feature = "wasi-http")]
-            wasi_http: self.wasi_http.clone(), // to-do
-            limits: self.limits.clone(), // to-do
+            wasi_http: self.wasi_http.clone(),
+            limits: self.limits.clone(),
             #[cfg(feature = "profiling")]
-            guest_profiler: self.guest_profiler.clone(), // to-do
+            guest_profiler: self.guest_profiler.clone(),
         };
 
         return forked_host;

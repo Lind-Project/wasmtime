@@ -463,19 +463,18 @@ impl Instance {
                             return Ok(val);
                         }
                         _ => {
+                            // unexpected stack pointer type (not i32)
                             return Err(());
                         }
                     }
                 },
                 _ => {
+                    // unexpected stack pointer export type (not a Global type)
                     return Err(());
                 }
             }
         }
-        else {
-            return Err(());
-        }
-        
+        // __stack_pointer export not found
         return Err(());
     }
 
