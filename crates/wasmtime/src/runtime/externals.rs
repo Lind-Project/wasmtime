@@ -1,3 +1,5 @@
+use std::boxed::Box;
+
 use crate::store::StoreOpaque;
 use crate::{AsContext, Engine, ExternType, Func, Memory, SharedMemory};
 
@@ -6,6 +8,24 @@ mod table;
 
 pub use global::Global;
 pub use table::Table;
+
+use super::Val;
+
+#[derive(Debug)]
+pub enum OnCalledAction {
+    /// Will call the function again
+    InvokeAgain,
+    /// Will return the result of the invocation
+    Finish(std::vec::Vec<Val>),
+    /// Traps with an error
+    Trap(Box<dyn std::error::Error + Send + Sync>),
+}
+
+#[derive(Copy, Clone)]
+pub struct RewindingReturn {
+    pub rewinding: bool,
+    pub retval: i32
+}
 
 // Externals
 

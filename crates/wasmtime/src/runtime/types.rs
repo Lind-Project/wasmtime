@@ -2615,6 +2615,11 @@ impl MemoryType {
         self.ty.minimum
     }
 
+    /// set the minimum size
+    pub fn set_minimum(&mut self, minimum: u64) {
+        self.ty.minimum = minimum;
+    }
+
     /// Returns the optionally-specified maximum number of pages this memory
     /// can have.
     ///

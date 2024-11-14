@@ -14,7 +14,7 @@ use crate::runtime::vm::vmcontext::{
 };
 use crate::runtime::vm::{
     ExportFunction, ExportGlobal, ExportMemory, ExportTable, GcStore, Imports, ModuleRuntimeInfo,
-    SendSyncPtr, Store, VMFunctionBody, VMGcRef, WasmFault,
+    SendSyncPtr, Store, VMFunctionBody, VMGcRef, WasmFault
 };
 use alloc::sync::Arc;
 use core::alloc::Layout;
@@ -1346,6 +1346,10 @@ impl InstanceHandle {
     /// Lookup a table by index.
     pub fn get_exported_table(&mut self, export: TableIndex) -> ExportTable {
         self.instance_mut().get_exported_table(export)
+    }
+
+    pub fn get_memory(&self, index: MemoryIndex) -> VMMemoryDefinition {
+        self.instance().get_memory(index)
     }
 
     /// Lookup an item with the given index.
