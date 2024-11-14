@@ -7,6 +7,7 @@ use wasmtime_lind_utils::{parse_env_var, LindCageManager};
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -20,6 +21,8 @@ const ASYNCIFY_START_UNWIND: &str = "asyncify_start_unwind";
 const ASYNCIFY_STOP_UNWIND: &str = "asyncify_stop_unwind";
 const ASYNCIFY_START_REWIND: &str = "asyncify_start_rewind";
 const ASYNCIFY_STOP_REWIND: &str = "asyncify_stop_rewind";
+
+const LIND_FS_ROOT: &str = "/home/lind-wasm/lind_fs_root";
 
 // Define the trait with the required method
 pub trait LindHost<T, U> {
@@ -816,8 +819,12 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             }
         }
 
+        let fs_root = Path::new(LIND_FS_ROOT);
+        let real_path = fs_root.join(path_str);
+        let real_path_str = String::from(real_path.to_str().unwrap());
+
         // if the file to exec does not exist
-        if !std::path::Path::new(path_str).exists() {
+        if !std::path::Path::new(&real_path_str).exists() {
             return Ok(-2);
         }
 
@@ -960,7 +967,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             // to-do: exec should not change the process id/cage id, however, the exec call from rustposix takes an
             // argument to change the process id. If we pass the same cageid, it would cause some error
             // lind_exec(cloned_pid as u64, cloned_pid as u64);
-            let ret = exec_call(&cloned_run_command, path_str, &args, cloned_pid, &cloned_next_cageid, &cloned_lind_manager, &environs);
+            let ret = exec_call(&cloned_run_command, &real_path_str, &args, cloned_pid, &cloned_next_cageid, &cloned_lind_manager, &environs);
 
             return Ok(OnCalledAction::Finish(ret.expect("exec-ed module error")));
         }));
