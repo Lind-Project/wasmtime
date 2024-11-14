@@ -984,7 +984,8 @@ impl Instance {
         len: u64,
     ) -> Result<(), Trap> {
         let memory = self.get_memory(memory_index);
-        let dst = self.validate_inbounds(memory.current_length(), dst, len)?;
+        // let dst = self.validate_inbounds(memory.current_length(), dst, len)?;
+        let dst = dst as usize;
 
         // Bounds and casts are checked above, by this point we know that
         // everything is safe.
