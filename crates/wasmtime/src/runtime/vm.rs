@@ -1,6 +1,6 @@
 //! Runtime library support for Wasmtime.
 
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 #![warn(clippy::cast_sign_loss)]
 
 use crate::prelude::*;

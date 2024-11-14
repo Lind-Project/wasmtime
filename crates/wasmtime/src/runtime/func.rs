@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{prelude::*, OnCalledAction};
 use crate::runtime::vm::{
     ExportFunction, SendSyncPtr, StoreBox, VMArrayCallHostFuncContext, VMContext, VMFuncRef,
     VMFunctionImport, VMOpaqueContext,
@@ -1059,15 +1059,55 @@ impl Func {
         params_and_returns: *mut ValRaw,
         params_and_returns_capacity: usize,
     ) -> Result<()> {
-        invoke_wasm_and_catch_traps(store, |caller| {
-            let func_ref = func_ref.as_ref();
-            (func_ref.array_call)(
-                func_ref.vmctx,
-                caller.cast::<VMOpaqueContext>(),
-                params_and_returns,
-                params_and_returns_capacity,
-            )
-        })
+        let mut result;
+
+        // Part of the unwind process
+        // When we start doing unwind from clone, exit, or etc, it will eventually exit the entire wasm module (return from _start function)
+        // Therefore, we must catch it here and check if the wasm module exits in rewind state or not.
+        loop {
+            // invoke wasm module
+            result = invoke_wasm_and_catch_traps(store, |caller| {
+                let func_ref = func_ref.as_ref();
+                (func_ref.array_call)(
+                    func_ref.vmctx,
+                    caller.cast::<VMOpaqueContext>(),
+                    params_and_returns,
+                    params_and_returns_capacity,
+                )
+            });
+
+            // check if there is any callback set on wasm module exiting
+            if let Some(callback) = store.0.on_called.take() {
+                // firstly invoke the callback, which is set under lind-multi-process after start unwind
+                match callback(store) {
+                    // InvokeAgain means we need to re-invoke this function (i.e. _start function)
+                    // This is set when we finished the unwind and starts the rewind process
+                    Ok(OnCalledAction::InvokeAgain) => {
+                        continue;
+                    },
+                    // Finish means we can just do the normal exit and there is no need to invoke again
+                    // For example, exit syscall uses this routine after it finishes the unwind process
+                    Ok(OnCalledAction::Finish(ret)) => {
+                        // propogate the exit code
+                        let retval = ret.get(0).unwrap();
+                        if let Val::I32(res) = retval {
+                            *params_and_returns = ValRaw::i32(*res);
+                        }
+                        break;
+                    },
+                    // these two state are used for error handling
+                    Ok(OnCalledAction::Trap(trap)) => {
+                        eprintln!("encounter a trap: {:?}", trap);
+                    },
+                    Err(err) => {
+                        eprintln!("encounter a error: {:?}", err);
+                    }
+                }
+            }
+            break;
+        }
+
+        result
     }
 
     /// Converts the raw representation of a `funcref` into an `Option<Func>`
@@ -1591,6 +1631,7 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
             store.0.default_caller(),
             closure,
         );
+        
         exit_wasm(store, exit);
         store.0.call_hook(CallHook::ReturningFromWasm)?;
         result.map_err(|t| crate::trap::from_runtime_box(store.0, t))
@@ -2080,6 +2121,13 @@ impl<T> Caller<'_, T> {
             .host_state()
             .downcast_ref::<Instance>()?
             .get_export(&mut self.store, name)
+    }
+
+    pub fn get_stack_pointer(&mut self) -> Result<i32, ()> {
+        self.caller
+            .host_state()
+            .downcast_ref::<Instance>().ok_or(()).unwrap()
+            .get_stack_pointer(&mut self.store)
     }
 
     /// Access the underlying data owned by this `Store`.
