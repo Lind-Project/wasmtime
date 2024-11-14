@@ -213,7 +213,7 @@ where
 
         let mut result;
 
-        // basically the same thing from runtime/func.rs
+        // Refer to loop in runtime/func.rs
         // This routine is another possible routine when the wasm module is launched, specifically,
         // the initial wasm instance. Other wasm instance created by fork or exec is using the routine
         // from runtime/func.rs

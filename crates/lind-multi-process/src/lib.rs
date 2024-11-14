@@ -520,7 +520,7 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
     // * stack_addr: child's base stack address
     // * stack_size: child's stack size
     // * child_tid: the address of the child's thread id. This should be set by wasmtime
-    pub fn fork_shared_call(&self, mut caller: &mut Caller<'_, T>,
+    pub fn pthread_create_call(&self, mut caller: &mut Caller<'_, T>,
                     stack_addr: i32, stack_size: i32, child_tid: u64
                 ) -> Result<i32> {
         // get the base address of the memory
@@ -1194,12 +1194,12 @@ pub fn lind_fork<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync,
 }
 
 // entry point of pthread_create syscall
-pub fn lind_fork_shared_memory<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>
+pub fn lind_pthread_create<T: LindHost<T, U> + Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + std::marker::Sync>
         (caller: &mut Caller<'_, T>,
         stack_addr: i32, stack_size: i32, child_tid: u64) -> Result<i32> {
     let host = caller.data().clone();
     let ctx = host.get_ctx();
-    ctx.fork_shared_call(caller, stack_addr, stack_size, child_tid)
+    ctx.pthread_create_call(caller, stack_addr, stack_size, child_tid)
 }
 
 // entry point of catch_rewind
@@ -1235,7 +1235,7 @@ pub fn clone_syscall<T: LindHost<T, U> + Clone + Send + 'static + std::marker::S
     }
     else {
         // pthread_create
-        match lind_fork_shared_memory(caller, args.stack as i32, args.stack_size as i32, args.child_tid) {
+        match lind_pthread_create(caller, args.stack as i32, args.stack_size as i32, args.child_tid) {
             Ok(res) => res,
             Err(e) => -1
         }

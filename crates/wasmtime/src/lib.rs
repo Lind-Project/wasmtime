@@ -271,7 +271,6 @@
 //!
 //! [manifest]: https://github.com/bytecodealliance/wasmtime/blob/main/crates/wasmtime/Cargo.toml
 
-// #![deny(missing_docs)]
 #![doc(test(attr(deny(warnings))))]
 #![doc(test(attr(allow(dead_code, unused_variables, unused_mut))))]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
