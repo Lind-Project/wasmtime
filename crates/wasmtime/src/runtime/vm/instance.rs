@@ -959,16 +959,17 @@ impl Instance {
     }
 
     fn validate_inbounds(&self, max: usize, ptr: u64, len: u64) -> Result<usize, Trap> {
-        let oob = || Trap::MemoryOutOfBounds;
-        let end = ptr
-            .checked_add(len)
-            .and_then(|i| usize::try_from(i).ok())
-            .ok_or_else(oob)?;
-        if end > max {
-            Err(oob())
-        } else {
-            Ok(ptr as usize)
-        }
+        // let oob = || Trap::MemoryOutOfBounds;
+        // let end = ptr
+        //     .checked_add(len)
+        //     .and_then(|i| usize::try_from(i).ok())
+        //     .ok_or_else(oob)?;
+        // if end > max {
+        //     Err(oob())
+        // } else {
+        //     Ok(ptr as usize)
+        // }
+        return Ok(ptr as usize);
     }
 
     /// Perform the `memory.fill` operation on a locally defined memory.

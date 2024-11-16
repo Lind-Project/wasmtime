@@ -819,9 +819,16 @@ impl<T: Clone + Send + 'static + std::marker::Sync, U: Clone + Send + 'static + 
             }
         }
 
-        let fs_root = Path::new(LIND_FS_ROOT);
-        let real_path = fs_root.join(path_str);
+        // if user is passing absolute path, we need to first convert it to a relative path
+        // by removing prefix "/" at the beginning, then join with lind filesystem root folder
+        let usr_path = Path::new(path_str).strip_prefix("/").unwrap_or(Path::new(path_str));
+
+        // NOTE: join method will replace the original path if joined path is an absolute path
+        // so must make sure the usr_path is not absolute otherwise it may escape the lind filesystem
+        let real_path = Path::new(LIND_FS_ROOT).join(usr_path);
+        // println!("real_path: {:?}", real_path);
         let real_path_str = String::from(real_path.to_str().unwrap());
+        // println!("exec real_path: {}", real_path_str);
 
         // if the file to exec does not exist
         if !std::path::Path::new(&real_path_str).exists() {
