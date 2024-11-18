@@ -196,7 +196,7 @@ impl RunCommand {
         // operations that block in the CLI since the CLI doesn't use async to
         // invoke WebAssembly.
         let result = wasmtime_wasi::runtime::with_ambient_tokio_runtime(|| {
-            self.load_main_module(&mut store, &mut linker, &main, modules)
+            self.load_main_module(&mut store, &mut linker, &main, modules, 1)
                 .with_context(|| {
                     format!(
                         "failed to run main module `{}`",
@@ -370,6 +370,8 @@ impl RunCommand {
             ctx.set_lind_cageid(pid as u64);
         }
 
+        rawposix::safeposix::dispatcher::lind_cage_vmmap_init(pid as u64);
+
         // Pre-emptively initialize and install a Tokio runtime ambiently in the
         // environment when executing the module. Without this whenever a WASI
         // call is made that needs to block on a future a Tokio runtime is
@@ -379,7 +381,7 @@ impl RunCommand {
         // operations that block in the CLI since the CLI doesn't use async to
         // invoke WebAssembly.
         let result = wasmtime_wasi::runtime::with_ambient_tokio_runtime(|| {
-            self.load_main_module(&mut store, &mut linker, &main, modules)
+            self.load_main_module(&mut store, &mut linker, &main, modules, pid as u64)
                 .with_context(|| {
                     format!(
                         "failed to run child module `{}`",
@@ -522,6 +524,7 @@ impl RunCommand {
         linker: &mut CliLinker,
         module: &RunTarget,
         modules: Vec<(String, Module)>,
+        pid: u64
     ) -> Result<Vec<Val>> {
         // The main module might be allowed to have unknown imports, which
         // should be defined as traps:
@@ -586,7 +589,7 @@ impl RunCommand {
                 let handle = store.as_context().0.instance(wasmtime::InstanceId::from_index(0));
                 let defined_memory = handle.get_memory(wasmtime_environ::MemoryIndex::from_u32(0));
                 let memory_base = defined_memory.base as i64;
-                rawposix::safeposix::dispatcher::set_base_address(1, memory_base);
+                rawposix::safeposix::dispatcher::set_base_address(pid, memory_base);
                 // rawposix::safeposix::dispatcher::lind_syscall_api(1, 21, 0, memory_base, 0, 327680, (PROT_READ | PROT_WRITE) as u64, (MAP_PRIVATE | MAP_ANONYMOUS) as u64, u64::max_value(), 0);
 
                 match func {
