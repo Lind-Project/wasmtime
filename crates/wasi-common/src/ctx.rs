@@ -29,7 +29,6 @@ pub struct WasiCtxInner {
     pub clocks: WasiClocks,
     pub sched: Box<dyn WasiSched>,
     pub table: Table,
-    pub lind_cageid: RwLock<u64>,
 }
 
 impl WasiCtx {
@@ -38,9 +37,7 @@ impl WasiCtx {
         clocks: WasiClocks,
         sched: Box<dyn WasiSched>,
         table: Table,
-        lind_cageid: u64
     ) -> Self {
-        let lind_cageid = RwLock::new(lind_cageid);
         let s = WasiCtx(Arc::new(WasiCtxInner {
             args: StringArray::new(),
             env: StringArray::new(),
@@ -48,7 +45,6 @@ impl WasiCtx {
             clocks,
             sched,
             table,
-            lind_cageid,
         }));
         s.set_stdin(Box::new(crate::pipe::ReadPipe::new(std::io::empty())));
         s.set_stdout(Box::new(crate::pipe::WritePipe::new(std::io::sink())));
@@ -124,26 +120,20 @@ impl WasiCtx {
         Ok(())
     }
 
-    pub fn set_lind_cageid(&mut self, lind_cageid: u64) {
-        let inner = self.0.clone();
-
-        let mut cageid = inner.lind_cageid.write().expect("Failed to acquire write lock");
-        *cageid = lind_cageid;
-    }
-
-    pub fn get_lind_cageid(&self) -> u64 {
-        return *self.lind_cageid.read().unwrap();
-    }
-
+    // Currently we are still using wasi_preview1 interface to handle command line arguments and environment variables
+    // We could implement our own handler for command line arguments and environment variables but its just more convenient to
+    // use the existing stuff in wasi_preview1
+    // fields like `random`, `clocks`, etc are related to other functions in wasi_preview1, which is not used in glibc.
+    // handle how the wasi context should be cloned when fork happens
     pub fn fork(&self) -> Self {
         let forked_ctx = WasiCtxInner {
-            args: self.args.clone(),
-            env: self.env.clone(),
+            args: self.args.clone(), // we want to clone the entire args
+            env: self.env.clone(), // as well as environment variables
+            // below are currently not used by glibc in lind-wasm, so doesn't really matter how to handle them for now
             random: Mutex::new(random_ctx()),
             clocks: clocks_ctx(),
-            sched: sched_ctx(), // to-do: not sure about this one
-            table: Table::new(), // to-do: we should really fork the table instead of creating a new one
-            lind_cageid: RwLock::new(self.get_lind_cageid()),
+            sched: sched_ctx(),
+            table: Table::new(),
         };
         
         let ctx = Self(Arc::new(forked_ctx));
